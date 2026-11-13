@@ -26,12 +26,13 @@ import (
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud/services/loadbalancers/builders"
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/options"
 	"go.uber.org/mock/gomock"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	alb "github.com/yandex-cloud/go-genproto/yandex/cloud/apploadbalancer/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -151,7 +152,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 
 		It("should not reconcile an YandexCluster with paused CAPI Cluster", func() {
 			cc := e.getCAPIClusterWithInfrastructureReference(testNamespace.Name)
-			cc.Spec.Paused = true
+			cc.Spec.Paused = ptr.To(true)
 			Expect(e.Create(ctx, cc)).To(Succeed())
 			yc := e.getYandexClusterWithOwnerReference(testNamespace.Name)
 			Expect(e.Create(ctx, yc)).To(Succeed())
@@ -405,7 +406,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			Expect(e.Create(ctx, cc)).To(Succeed())
 			yc := e.getYandexClusterWithOwnerReference(testNamespace.Name)
 			controlPlaneEndpointIP := "1.1.1.1"
-			yc.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+			yc.Spec.ControlPlaneEndpoint = clusterv1beta1.APIEndpoint{
 				Host: controlPlaneEndpointIP,
 				Port: 8443,
 			}
@@ -479,7 +480,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			yc := e.getYandexClusterWithOwnerReference(testNamespace.Name)
 			controlPlaneEndpointIP := "1.2.3.4"
 			ip := "1.2.3.4"
-			yc.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+			yc.Spec.ControlPlaneEndpoint = clusterv1beta1.APIEndpoint{
 				Host: controlPlaneEndpointIP,
 				Port: 8443,
 			}

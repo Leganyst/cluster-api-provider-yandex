@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -150,20 +150,22 @@ var _ = Describe("EnvTest check", func() {
 // getFilePathToCAPICRDs loads CAPI CRD and returns path
 // for loaded CRD.
 func getFilePathToCAPICRDs() []string {
-	packageName := "sigs.k8s.io/cluster-api"
+	// The module root is not a Go package since Cluster API v1.11,
+	// so resolve the module directory through a package that exists.
+	packageName := "sigs.k8s.io/cluster-api/util"
 	packageConfig := &packages.Config{
 		Mode: packages.NeedModule,
 	}
 
 	pkgs, err := packages.Load(packageConfig, packageName)
-	if err != nil {
-		return nil
-	}
+	Expect(err).NotTo(HaveOccurred())
+	Expect(pkgs).NotTo(BeEmpty())
 
 	pkg := pkgs[0]
+	Expect(pkg.Module).NotTo(BeNil(), "module for %s not found", packageName)
 
 	return []string{
-		filepath.Join(pkg.Module.Dir, "config", "crd", "bases"),
+		filepath.Join(pkg.Module.Dir, "core", "config", "crd", "bases"),
 		filepath.Join(pkg.Module.Dir, "controlplane", "kubeadm", "config", "crd", "bases"),
 	}
 }

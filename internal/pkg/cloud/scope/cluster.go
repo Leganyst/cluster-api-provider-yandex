@@ -10,8 +10,9 @@ import (
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	yandex "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client"
 
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	"sigs.k8s.io/cluster-api/util/patch"
+	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	v1beta1patch "sigs.k8s.io/cluster-api/util/deprecated/v1beta1/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -51,7 +52,7 @@ func NewClusterScope(ctx context.Context, params ClusterScopeParams) (*ClusterSc
 		return nil, err
 	}
 
-	helper, err := patch.NewHelper(params.YandexCluster, params.Client)
+	helper, err := v1beta1patch.NewHelper(params.YandexCluster, params.Client)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to init patch helper")
 	}
@@ -68,7 +69,7 @@ func NewClusterScope(ctx context.Context, params ClusterScopeParams) (*ClusterSc
 // ClusterScope defines the basic context for an actuator to operate upon.
 type ClusterScope struct {
 	client      client.Client
-	patchHelper *patch.Helper
+	patchHelper *v1beta1patch.Helper
 
 	Cluster       *clusterv1.Cluster
 	YandexCluster *infrav1.YandexCluster
@@ -127,7 +128,7 @@ func (c *ClusterScope) GetLabels() infrav1.Labels {
 }
 
 // ControlPlaneEndpoint gets the cluster API endpoit.
-func (c *ClusterScope) ControlPlaneEndpoint() clusterv1.APIEndpoint {
+func (c *ClusterScope) ControlPlaneEndpoint() clusterv1beta1.APIEndpoint {
 	return c.YandexCluster.Spec.ControlPlaneEndpoint
 }
 

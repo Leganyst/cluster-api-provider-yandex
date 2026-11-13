@@ -17,11 +17,12 @@ limitations under the License.
 package v1alpha1_test
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 )
 
 func TestYandexCluster_ValidateCreate(t *testing.T) {
@@ -343,7 +344,7 @@ func TestYandexCluster_ValidateCreate(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(_ *testing.T) {
-			warn, err := test.YandexCluster.ValidateCreate()
+			warn, err := (&infrav1.YandexClusterValidator{}).ValidateCreate(context.Background(), test.YandexCluster)
 			if test.wantErr {
 				y.Expect(err).To(HaveOccurred())
 			} else {
@@ -558,7 +559,7 @@ func TestYandexCluster_ValidateUpdate(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(_ *testing.T) {
-			warn, err := test.newTemplate.ValidateUpdate(test.oldTemplate)
+			warn, err := (&infrav1.YandexClusterValidator{}).ValidateUpdate(context.Background(), test.oldTemplate, test.newTemplate)
 			if test.wantErr {
 				g.Expect(err).To(HaveOccurred())
 			} else {

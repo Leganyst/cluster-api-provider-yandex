@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"reflect"
 	"regexp"
 
@@ -26,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -43,25 +43,20 @@ var nameRegex = regexp.MustCompile("^[a-z]([-a-z0-9]{0,55}[a-z0-9])?$")
 
 // SetupWebhookWithManager creates an YandexMachineTemplate validation webhook.
 func (t *YandexMachineTemplate) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(t).
+	return ctrl.NewWebhookManagedBy(mgr, t).
+		WithValidator(&YandexMachineTemplateValidator{}).
 		Complete()
 }
 
 //+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachinetemplate,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachinetemplates,verbs=create;update,versions=v1alpha1,name=validation.yandexmachinetemplates.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1beta1
 
-var (
-	_ webhook.Defaulter = &YandexMachineTemplate{}
-	_ webhook.Validator = &YandexMachineTemplate{}
-)
+// YandexMachineTemplateValidator implements a validating webhook for YandexMachineTemplate.
+type YandexMachineTemplateValidator struct{}
 
-// Default implements webhook.Defaulter so a webhook will be registered for the type.
-func (t *YandexMachineTemplate) Default() {
-	ymtlog.Info("default", "name", t.Name)
-}
+var _ admission.Validator[*YandexMachineTemplate] = &YandexMachineTemplateValidator{}
 
-// ValidateCreate implements webhook.Validator so a webhook will be registered for the type.
-func (t *YandexMachineTemplate) ValidateCreate() (admission.Warnings, error) {
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexMachineTemplateValidator) ValidateCreate(_ context.Context, t *YandexMachineTemplate) (admission.Warnings, error) {
 	ymtlog.Info("validate create", "name", t.Name)
 	var allErrs field.ErrorList
 
@@ -84,8 +79,8 @@ func (t *YandexMachineTemplate) ValidateCreate() (admission.Warnings, error) {
 	return nil, apierrors.NewInvalid(GroupVersion.WithKind("YandexMachineTemplate").GroupKind(), t.Name, allErrs)
 }
 
-// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type.
-func (t *YandexMachineTemplate) ValidateUpdate(oldRaw runtime.Object) (admission.Warnings, error) {
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexMachineTemplateValidator) ValidateUpdate(_ context.Context, oldRaw, t *YandexMachineTemplate) (admission.Warnings, error) {
 	ymtlog.Info("validate update", "name", t.Name)
 
 	newYandexMachineTemplate, err := runtime.DefaultUnstructuredConverter.ToUnstructured(t)
@@ -113,8 +108,8 @@ func (t *YandexMachineTemplate) ValidateUpdate(oldRaw runtime.Object) (admission
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.Validator so a webhook will be registered for the type.
-func (t *YandexMachineTemplate) ValidateDelete() (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type.
+func (*YandexMachineTemplateValidator) ValidateDelete(_ context.Context, t *YandexMachineTemplate) (admission.Warnings, error) {
 	ymtlog.Info("validate delete", "name", t.Name)
 
 	return nil, nil

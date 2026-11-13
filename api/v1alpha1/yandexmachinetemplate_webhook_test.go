@@ -15,6 +15,7 @@ limitations under the License.
 package v1alpha1_test
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -122,7 +123,7 @@ func TestYandexMachineTemplate_ValidateCreate(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(_ *testing.T) {
-			warn, err := test.template.ValidateCreate()
+			warn, err := (&infrav1.YandexMachineTemplateValidator{}).ValidateCreate(context.Background(), test.template)
 
 			if test.wantErr {
 				g.Expect(err).To(HaveOccurred())
@@ -196,7 +197,7 @@ func TestYandexMachineTemplate_ValidateUpdate(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(_ *testing.T) {
-			warn, err := test.newTemplate.ValidateUpdate(test.oldTemplate)
+			warn, err := (&infrav1.YandexMachineTemplateValidator{}).ValidateUpdate(context.Background(), test.oldTemplate, test.newTemplate)
 
 			if test.wantErr {
 				g.Expect(err).To(HaveOccurred())

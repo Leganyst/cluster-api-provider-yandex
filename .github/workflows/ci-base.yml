@@ -18,46 +18,46 @@ on:
 jobs:
   golangci:
     name: lint
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: false
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
-        with:
-          args: --timeout=5m
-          # Require: The version of golangci-lint to use.
-          version: v1.63.4
+      # The golangci-lint version is pinned in the Makefile (GOLANGCI_LINT_VER),
+      # so that CI and local runs always use the same linter.
+      - name: Run lint make target
+        run: make lint
 
   test:
     needs: golangci
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
 
     - name: Run test make target
       run: make test
 
+    - name: Check that generated files are up to date
+      run: git diff --exit-code
+
   build:
     needs: [golangci, test]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
 

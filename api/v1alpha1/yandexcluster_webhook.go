@@ -17,17 +17,16 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -47,26 +46,21 @@ var yandexclusterlog = logf.Log.WithName("yandexcluster-resource")
 
 // SetupWebhookWithManager creates a validation webhook
 func (c *YandexCluster) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(c).
+	return ctrl.NewWebhookManagedBy(mgr, c).
+		WithValidator(&YandexClusterValidator{}).
 		Complete()
 }
 
 //nolint:lll // controller-gen marker
 //+kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexcluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexclusters,versions=v1alpha1,name=validation.yandexclusters.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1beta1
 
-var (
-	_ webhook.Defaulter = &YandexCluster{}
-	_ webhook.Validator = &YandexCluster{}
-)
+// YandexClusterValidator implements a validating webhook for YandexCluster.
+type YandexClusterValidator struct{}
 
-// Default implements webhook.Defaulter so a webhook will be registered for the type.
-func (c *YandexCluster) Default() {
-	yandexclusterlog.Info("default", "name", c.Name)
-}
+var _ admission.Validator[*YandexCluster] = &YandexClusterValidator{}
 
-// ValidateCreate implements webhook.Validator so a webhook will be registered for the type.
-func (c *YandexCluster) ValidateCreate() (admission.Warnings, error) {
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexClusterValidator) ValidateCreate(_ context.Context, c *YandexCluster) (admission.Warnings, error) {
 	yandexclusterlog.Info("validate create", "name", c.Name)
 	var allErrs field.ErrorList
 
@@ -95,14 +89,10 @@ func (c *YandexCluster) ValidateCreate() (admission.Warnings, error) {
 	return nil, apierrors.NewInvalid(GroupVersion.WithKind("YandexCluster").GroupKind(), c.Name, allErrs)
 }
 
-// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type.
-func (c *YandexCluster) ValidateUpdate(oldRaw runtime.Object) (admission.Warnings, error) {
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexClusterValidator) ValidateUpdate(_ context.Context, old, c *YandexCluster) (admission.Warnings, error) {
 	yandexclusterlog.Info("validate update", "name", c.Name)
 	var allErrs field.ErrorList
-	old, ok := oldRaw.(*YandexCluster)
-	if !ok {
-		return nil, apierrors.NewBadRequest("failed to convert runtime Object to YandexCluster")
-	}
 
 	if !reflect.DeepEqual(old.Spec.LoadBalancer, c.Spec.LoadBalancer) {
 		allErrs = append(allErrs,
@@ -128,8 +118,8 @@ func (c *YandexCluster) ValidateUpdate(oldRaw runtime.Object) (admission.Warning
 	return nil, apierrors.NewInvalid(GroupVersion.WithKind("YandexCluster").GroupKind(), c.Name, allErrs)
 }
 
-// ValidateDelete implements webhook.Validator so a webhook will be registered for the type.
-func (c *YandexCluster) ValidateDelete() (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type.
+func (*YandexClusterValidator) ValidateDelete(_ context.Context, c *YandexCluster) (admission.Warnings, error) {
 	yandexclusterlog.Info("validate delete", "name", c.Name)
 	return nil, nil
 }

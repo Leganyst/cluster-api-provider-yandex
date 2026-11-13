@@ -11,7 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/cluster-api/util/patch"
+	v1beta1patch "sigs.k8s.io/cluster-api/util/deprecated/v1beta1/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -27,7 +27,7 @@ type IdentityScopeParams struct {
 type IdentityScope struct {
 	Identity           *infrav1.YandexIdentity
 	client             client.Client
-	patchHelper        *patch.Helper
+	patchHelper        *v1beta1patch.Helper
 	yandexClientGetter yandex.YandexClientGetter
 	secret             *corev1.Secret
 }
@@ -46,7 +46,7 @@ func NewIdentityScope(params IdentityScopeParams) (*IdentityScope, error) {
 		return nil, errors.New("failed to generate new Identity scope from nil YandexIdentity")
 	}
 
-	helper, err := patch.NewHelper(params.YandexIdentity, params.Client)
+	helper, err := v1beta1patch.NewHelper(params.YandexIdentity, params.Client)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to init patch helper for Identity scope")
 	}
@@ -105,7 +105,7 @@ func (s *IdentityScope) CheckConnectWithIdentity(ctx context.Context) error {
 	// TODO: Check permissions? Test connection?
 
 	// We don't care about the client close result
-	yandexClient.Close(ctx)
+	_ = yandexClient.Close(ctx)
 
 	return nil
 }

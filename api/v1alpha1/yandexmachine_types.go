@@ -21,8 +21,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/api/resource"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	"sigs.k8s.io/cluster-api/errors"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	"sigs.k8s.io/cluster-api/api/deprecated/errors"
 )
 
 const (
@@ -203,5 +203,5 @@ func (ym *YandexMachine) SetConditions(conditions clusterv1.Conditions) {
 }
 
 func init() {
-	SchemeBuilder.Register(&YandexMachine{}, &YandexMachineList{})
+	objectTypes = append(objectTypes, &YandexMachine{}, &YandexMachineList{})
 }

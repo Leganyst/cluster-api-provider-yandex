@@ -24,17 +24,17 @@ import (
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	capierrors "sigs.k8s.io/cluster-api/errors"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	capierrors "sigs.k8s.io/cluster-api/api/deprecated/errors"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	yandex "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client"
@@ -103,7 +103,7 @@ func (r *YandexMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Namespace: yandexMachine.Namespace,
 		Name:      cluster.Spec.InfrastructureRef.Name,
 	}
-	if err = r.Client.Get(ctx, yandexClusterKey, yandexCluster); err != nil {
+	if err = r.Get(ctx, yandexClusterKey, yandexCluster); err != nil {
 		logger.Info("YandexCluster is not available yet")
 		return ctrl.Result{}, nil
 	}
@@ -136,7 +136,7 @@ func (r *YandexMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}()
 
-	if !yandexMachine.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !yandexMachine.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, machineScope)
 	}
 
@@ -201,9 +201,14 @@ func (r *YandexMachineReconciler) reconcileDelete(ctx context.Context, machineSc
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *YandexMachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	c, err := ctrl.NewControllerManagedBy(mgr).
+	clusterToObjectFunc, err := util.ClusterToTypedObjectsMapper(r.Client, &infrav1.YandexMachineList{}, mgr.GetScheme())
+	if err != nil {
+		return errors.Wrapf(err, "failed to create mapper for Cluster to YandexMachines")
+	}
+
+	err = ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.YandexMachine{}).
-		WithEventFilter(predicates.ResourceNotPaused(ctrl.LoggerFrom(ctx))).
+		WithEventFilter(predicates.ResourceNotPaused(mgr.GetScheme(), ctrl.LoggerFrom(ctx))).
 		Watches(
 			&clusterv1.Machine{},
 			handler.EnqueueRequestsFromMapFunc(util.MachineToInfrastructureMapFunc(infrav1.GroupVersion.WithKind("YandexMachine"))),
@@ -212,23 +217,15 @@ func (r *YandexMachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl
 			&infrav1.YandexCluster{},
 			handler.EnqueueRequestsFromMapFunc(r.YandexClusterToYandexMachines(ctx)),
 		).
-		Build(r)
+		// watch the clusterv1.Cluster object for unpause & infrastructure provisioned notifications.
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(clusterToObjectFunc),
+			builder.WithPredicates(predicates.ClusterUnpausedAndInfrastructureProvisioned(mgr.GetScheme(), ctrl.LoggerFrom(ctx))),
+		).
+		Complete(r)
 	if err != nil {
 		return errors.Wrapf(err, "error creating controller")
-	}
-
-	clusterToObjectFunc, err := util.ClusterToTypedObjectsMapper(r.Client, &infrav1.YandexMachineList{}, mgr.GetScheme())
-	if err != nil {
-		return errors.Wrapf(err, "failed to create mapper for Cluster to YandexMachines")
-	}
-
-	// add a watch on clusterv1.Cluster object for unpause & ready notifications.
-	if err := c.Watch(
-		source.Kind(mgr.GetCache(), &clusterv1.Cluster{}),
-		handler.EnqueueRequestsFromMapFunc(clusterToObjectFunc),
-		predicates.ClusterUnpausedAndInfrastructureReady(ctrl.LoggerFrom(ctx)),
-	); err != nil {
-		return errors.Wrapf(err, "failed adding a watch for ready clusters")
 	}
 
 	return nil
