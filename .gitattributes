@@ -1,0 +1,3 @@
+# Keep LF everywhere: Makefile, shell snippets and generated manifests break with CRLF
+# when the repository is checked out on Windows and built in WSL/containers.
+* text=auto eol=lf
