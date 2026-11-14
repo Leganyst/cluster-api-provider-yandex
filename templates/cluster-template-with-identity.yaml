@@ -15,11 +15,13 @@
 ---
 # YandexIdentity points to a secret with the service account key that is used for this cluster
 # instead of the default key of the provider (YC_SA_KEY).
+# The identity and its secret live in the namespace of the cluster: clusterctl moves every object
+# of the template to the target namespace and exposes that namespace as the NAMESPACE variable.
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
 kind: YandexIdentity
 metadata:
   name: "${CLUSTER_NAME}"
-  namespace: capy-system
+  namespace: "${NAMESPACE}"
 spec:
   secretname: "${YANDEX_SECRET_NAME}"
   keyname: "${YANDEX_SECRET_KEY}"
@@ -40,7 +42,7 @@ spec:
         zoneID: ${YANDEX_ZONE_ID:=ru-central1-a}
   identityRef:
     name: "${CLUSTER_NAME}"
-    namespace: capy-system
+    namespace: "${NAMESPACE}"
 ---
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
