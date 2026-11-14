@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	alb "github.com/yandex-cloud/go-genproto/yandex/cloud/apploadbalancer/v1"
-	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
@@ -260,19 +259,42 @@ func (s *Service) reconcileALB(ctx context.Context, backendGroupID string) error
 			return err
 		}
 		logger.Info("application loadbalancer created", "instance id", id)
-		conditions.MarkTrue(s.scope.YandexCluster, infrav1.ConditionStatusReady)
 		return nil
 	}
 
 	return nil
 }
 
+// getInternalAddress returns the internal IPv4 address of the first listener endpoint,
+// or an empty string if the load balancer has no such address.
 func (s *Service) getInternalAddress(lb *alb.LoadBalancer) string {
-	return lb.Listeners[0].GetEndpoints()[0].Addresses[0].GetInternalIpv4Address().Address
+	endpoint := firstEndpoint(lb)
+	if len(endpoint.GetAddresses()) == 0 {
+		return ""
+	}
+
+	return endpoint.GetAddresses()[0].GetInternalIpv4Address().GetAddress()
 }
 
+// getInternalPort returns the port of the first listener endpoint,
+// or zero if the load balancer has no listener endpoints.
 func (s *Service) getInternalPort(lb *alb.LoadBalancer) int32 {
-	return int32(lb.Listeners[0].GetEndpoints()[0].Ports[0])
+	endpoint := firstEndpoint(lb)
+	if len(endpoint.GetPorts()) == 0 {
+		return 0
+	}
+
+	return int32(endpoint.GetPorts()[0])
+}
+
+// firstEndpoint returns the first endpoint of the first listener. The result may be nil,
+// which is safe to use with the generated getters.
+func firstEndpoint(lb *alb.LoadBalancer) *alb.Endpoint {
+	if len(lb.GetListeners()) == 0 || len(lb.GetListeners()[0].GetEndpoints()) == 0 {
+		return nil
+	}
+
+	return lb.GetListeners()[0].GetEndpoints()[0]
 }
 
 // describeALB returns the IP address and port of the application load balancer listener.
@@ -286,11 +308,22 @@ func (s *Service) describeALB(ctx context.Context) (infrav1.LoadBalancerStatus, 
 		return infrav1.LoadBalancerStatus{}, err
 	}
 
+	// The load balancer may disappear between two calls (e.g. it was deleted manually).
+	if lb == nil {
+		return infrav1.LoadBalancerStatus{}, fmt.Errorf("load balancer %s not found", s.scope.GetLBName())
+	}
+
 	// TODO: external address support.
 	status := infrav1.LoadBalancerStatus{
 		ListenerAddress: s.getInternalAddress(lb),
 		ListenerPort:    s.getInternalPort(lb),
 	}
+	if status.ListenerAddress == "" || status.ListenerPort == 0 {
+		return infrav1.LoadBalancerStatus{}, fmt.Errorf(
+			"load balancer %s has no listener with an internal IPv4 address, external listeners are not supported yet",
+			s.scope.GetLBName())
+	}
+
 	return status, nil
 }
 

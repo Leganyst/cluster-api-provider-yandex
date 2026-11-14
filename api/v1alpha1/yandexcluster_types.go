@@ -19,7 +19,6 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 const (
@@ -58,7 +57,7 @@ type YandexClusterSpec struct {
 	// Do not set it manually when creating YandexCluster as CAPY will set this for you
 	// after creating load balancer based on LoadBalancer specification.
 	// +optional
-	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint"`
+	ControlPlaneEndpoint APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
 
 	// FolderID is the identifier of YandexCloud folder to deploy the cluster to.
 	// +required
@@ -76,6 +75,32 @@ type YandexClusterSpec struct {
 	// IdentityRef is a reference to a YandexIdentity resource.
 	// +optional
 	IdentityRef *IdentityReference `json:"identityRef,omitempty"`
+}
+
+// APIEndpoint represents a reachable Kubernetes API endpoint.
+// +kubebuilder:validation:MinProperties=1
+type APIEndpoint struct {
+	// host is the hostname on which the API server is serving.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	Host string `json:"host,omitempty"`
+
+	// port is the port on which the API server is serving.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+}
+
+// IsZero returns true if both host and port are zero values.
+func (v APIEndpoint) IsZero() bool {
+	return v.Host == "" && v.Port == 0
+}
+
+// IsValid returns true if both host and port are non-zero values.
+func (v APIEndpoint) IsValid() bool {
+	return v.Host != "" && v.Port != 0
 }
 
 // LoadBalancerSpec is a loadbalancer configuration for the kubernetes cluster API.
@@ -192,11 +217,31 @@ func (ir *IdentityReference) NamespacedName() types.NamespacedName {
 
 // YandexClusterStatus defines the observed state of YandexCluster.
 type YandexClusterStatus struct {
-	// Ready is true when the provider resource is ready.
-	// +kubebuilder:default=false
-	Ready        bool                 `json:"ready"`
-	LoadBalancer LoadBalancerStatus   `json:"loadBalancerStatus,omitempty"`
-	Conditions   clusterv1.Conditions `json:"conditions,omitempty"`
+	// conditions represents the observations of a YandexCluster's current state.
+	// Known condition types are Ready, LoadBalancerReady and Paused.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=32
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// initialization provides observations of the YandexCluster initialization process.
+	// NOTE: Fields in this struct are part of the Cluster API contract and are used to orchestrate initial Cluster provisioning.
+	// +optional
+	Initialization YandexClusterInitializationStatus `json:"initialization,omitempty,omitzero"`
+
+	// loadBalancerStatus is the observed state of the control plane load balancer.
+	// +optional
+	LoadBalancer LoadBalancerStatus `json:"loadBalancerStatus,omitempty"`
+}
+
+// YandexClusterInitializationStatus provides observations of the YandexCluster initialization process.
+// +kubebuilder:validation:MinProperties=1
+type YandexClusterInitializationStatus struct {
+	// provisioned is true when the infrastructure provider reports that the Cluster's infrastructure is fully provisioned.
+	// NOTE: this field is part of the Cluster API contract, and it is used to orchestrate initial Cluster provisioning.
+	// +optional
+	Provisioned *bool `json:"provisioned,omitempty"`
 }
 
 // LoadBalancerStatus encapsulates load balancer resources.
@@ -216,12 +261,14 @@ type LoadBalancerStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:path=yandexclusters,scope=Namespaced,categories=cluster-api
 // +kubebuilder:subresource:status
-//nolint: lll // controller-gen markers
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels.cluster\\.x-k8s\\.io/cluster-name",description="Cluster to which this YandexCluster belongs"
-//nolint: lll // controller-gen markers
-// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready",description="Cluster infrastructure is ready for YandexCloud instances"
+// +kubebuilder:printcolumn:name="Provisioned",type="string",JSONPath=".status.initialization.provisioned",description="Cluster infrastructure is provisioned"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Cluster infrastructure is ready for YandexCloud instances"
+// +kubebuilder:printcolumn:name="Paused",type="string",JSONPath=`.status.conditions[?(@.type=="Paused")].status`,description="Reconciliation paused",priority=10
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".spec.controlPlaneEndpoint",description="API Endpoint"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Time duration since creation of YandexCluster"
 
 // YandexCluster is the Schema for the yandexclusters API.
 type YandexCluster struct {
@@ -241,16 +288,16 @@ type YandexClusterList struct {
 	Items           []YandexCluster `json:"items"`
 }
 
-// GetConditions returns the list of conditions for an YandexCluster API object.
-func (yc *YandexCluster) GetConditions() clusterv1.Conditions {
+// GetConditions returns the set of conditions for this object.
+func (yc *YandexCluster) GetConditions() []metav1.Condition {
 	return yc.Status.Conditions
 }
 
-// SetConditions will set the given conditions on an YandexCluster API object.
-func (yc *YandexCluster) SetConditions(conditions clusterv1.Conditions) {
+// SetConditions sets conditions for an API object.
+func (yc *YandexCluster) SetConditions(conditions []metav1.Condition) {
 	yc.Status.Conditions = conditions
 }
 
 func init() {
-	SchemeBuilder.Register(&YandexCluster{}, &YandexClusterList{})
+	objectTypes = append(objectTypes, &YandexCluster{}, &YandexClusterList{})
 }

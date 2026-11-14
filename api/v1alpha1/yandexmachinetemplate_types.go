@@ -18,14 +18,14 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // YandexMachineTemplateResource describes the data needed to create am YandexMachine from a template.
 type YandexMachineTemplateResource struct {
 	// Standard object's metadata.
 	// +optional
-	ObjectMeta clusterv1.ObjectMeta `json:"metadata,omitempty"`
+	ObjectMeta clusterv1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
 	// Spec is the specification of the desired behavior of the machine.
 	Spec YandexMachineSpec `json:"spec"`
@@ -36,7 +36,8 @@ type YandexMachineTemplateSpec struct {
 	Template YandexMachineTemplateResource `json:"template"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:path=yandexmachinetemplates,scope=Namespaced,categories=cluster-api
 
 // YandexMachineTemplate is the Schema for the yandexmachinetemplates API.
 type YandexMachineTemplate struct {
@@ -56,5 +57,5 @@ type YandexMachineTemplateList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&YandexMachineTemplate{}, &YandexMachineTemplateList{})
+	objectTypes = append(objectTypes, &YandexMachineTemplate{}, &YandexMachineTemplateList{})
 }

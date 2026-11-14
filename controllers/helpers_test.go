@@ -17,6 +17,8 @@ package controllers //nolint:testpackage // private variables access
 import (
 	"context"
 	"fmt"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"time"
 
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client/mock_client"
@@ -29,13 +31,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	alb "github.com/yandex-cloud/go-genproto/yandex/cloud/apploadbalancer/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -67,7 +70,7 @@ func (c *ClusterTestEnv) CreateNamespace(ctx context.Context, prefix string) (*c
 			GenerateName: fmt.Sprintf("%s-", prefix),
 		},
 	}
-	if err := c.Client.Create(ctx, ns); err != nil {
+	if err := c.Create(ctx, ns); err != nil {
 		return nil, err
 	}
 
@@ -124,11 +127,10 @@ func (c *ClusterTestEnv) getCAPIClusterWithInfrastructureReference(nsName string
 			Namespace: nsName,
 		},
 		Spec: clusterv1.ClusterSpec{
-			InfrastructureRef: &corev1.ObjectReference{
-				Namespace:  nsName,
-				Name:       c.clusterName,
-				APIVersion: infrav1.GroupVersion.String(),
-				Kind:       "YandexCluster",
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				Name:     c.clusterName,
+				APIGroup: infrav1.GroupVersion.Group,
+				Kind:     "YandexCluster",
 			},
 		},
 	}
@@ -142,7 +144,7 @@ func (c *ClusterTestEnv) getYandexClusterWithOwnerReference(nsName string) *infr
 		Namespace: nsName,
 		OwnerReferences: []metav1.OwnerReference{
 			{
-				APIVersion: "cluster.x-k8s.io/v1beta1",
+				APIVersion: clusterv1.GroupVersion.String(),
 				Kind:       "Cluster",
 				Name:       c.clusterName,
 				UID:        "some-uid",
@@ -825,8 +827,8 @@ func (c *ClusterTestEnv) getYandexMachine(nsName string) *infrav1.YandexMachine 
 // getYandexMachineWithOwnerRef returns YandexMachine specification with CAPI Machine owner reference.
 func (c *ClusterTestEnv) getYandexMachineWithOwnerRef(nsName string) *infrav1.YandexMachine {
 	ym := c.getYandexMachine(nsName)
-	ym.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{
-		APIVersion: "cluster.x-k8s.io/v1beta1",
+	ym.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: clusterv1.GroupVersion.String(),
 		Kind:       "Machine",
 		Name:       c.machineName,
 		UID:        types.UID("uid"),
@@ -857,11 +859,10 @@ func (c *ClusterTestEnv) getMachine(nsName string) *clusterv1.Machine {
 // getMachineWithInfrastructureRef returns CAPI Machine with infrastructure reference.
 func (c *ClusterTestEnv) getMachineWithInfrastructureRef(nsName string) *clusterv1.Machine {
 	cm := c.getMachine(nsName)
-	cm.Spec.InfrastructureRef = corev1.ObjectReference{
-		Kind:       "YandexMachine",
-		Namespace:  nsName,
-		Name:       c.machineName,
-		APIVersion: infrav1.GroupVersion.String(),
+	cm.Spec.InfrastructureRef = clusterv1.ContractVersionedObjectReference{
+		Kind:     "YandexMachine",
+		Name:     c.machineName,
+		APIGroup: infrav1.GroupVersion.Group,
 	}
 	cm.Spec.Bootstrap = clusterv1.Bootstrap{
 		DataSecretName: ptr.To(c.secretName),
@@ -873,7 +874,7 @@ func (c *ClusterTestEnv) getMachineWithInfrastructureRef(nsName string) *cluster
 // getCPMachineWithInfrastructureRef returns controlplane CAPI Machine with infrastructure reference.
 func (c *ClusterTestEnv) getCPMachineWithInfrastructureRef(nsName string) *clusterv1.Machine {
 	cm := c.getMachineWithInfrastructureRef(nsName)
-	cm.ObjectMeta.Labels[clusterv1.MachineControlPlaneLabel] = ""
+	cm.Labels[clusterv1.MachineControlPlaneLabel] = ""
 
 	return cm
 }
@@ -889,6 +890,32 @@ func (c *ClusterTestEnv) getBootstrapSecret(nsName string) *corev1.Secret {
 			"value": []byte("verysecretdata"),
 		},
 	}
+}
+
+// clusterReady returns true when the YandexCluster reports everything the v1beta2 contract requires
+// for a ready infrastructure cluster: status.initialization.provisioned, the Ready condition and
+// the provider specific LoadBalancerReady condition.
+func clusterReady(yc *infrav1.YandexCluster) bool {
+	return ptr.Deref(yc.Status.Initialization.Provisioned, false) &&
+		conditions.IsTrue(yc, infrav1.ReadyCondition) &&
+		conditions.IsTrue(yc, infrav1.LoadBalancerReadyCondition)
+}
+
+// machineReady returns true when the YandexMachine reports everything the v1beta2 contract requires
+// for a ready infrastructure machine: status.initialization.provisioned, the Ready condition and
+// the provider specific InstanceReady condition.
+func machineReady(ym *infrav1.YandexMachine) bool {
+	return ptr.Deref(ym.Status.Initialization.Provisioned, false) &&
+		conditions.IsTrue(ym, infrav1.ReadyCondition) &&
+		conditions.IsTrue(ym, infrav1.InstanceReadyCondition)
+}
+
+// expectMachineNotProvisioned checks that the YandexMachine neither reports
+// status.initialization.provisioned nor a true Ready condition.
+func expectMachineNotProvisioned(ym *infrav1.YandexMachine) {
+	GinkgoHelper()
+	Expect(ptr.Deref(ym.Status.Initialization.Provisioned, false)).To(BeFalse())
+	Expect(conditions.IsTrue(ym, infrav1.ReadyCondition)).To(BeFalse())
 }
 
 // getReconcileRequest return runtime controller reconciliation request for a resource name.
@@ -942,6 +969,41 @@ func (c *ClusterTestEnv) setNewYandexMachineReconcileMocks(address string) {
 					[]interface{}{instance, nil})
 				return instance, nil
 			}),
+	)
+}
+
+// setStoppedAndStartedYandexMachineReconcileMocks sets mocks for an instance which is created in the
+// RUNNING state, then found STOPPED and then found RUNNING again.
+func (c *ClusterTestEnv) setStoppedAndStartedYandexMachineReconcileMocks(address string) {
+	const mockID string = "123"
+
+	getInstance := func(state compute.Instance_Status) func(context.Context, string) (*compute.Instance, error) {
+		return func(_ context.Context, id string) (*compute.Instance, error) {
+			instance := &compute.Instance{
+				Name:   c.machineName,
+				Id:     mockID,
+				Status: state,
+				NetworkInterfaces: []*compute.NetworkInterface{
+					{
+						PrimaryV4Address: &compute.PrimaryAddress{
+							Address: address,
+						},
+					},
+				},
+			}
+			logFunctionCalls(
+				"ComputeGet",
+				map[string]interface{}{"id": id},
+				[]interface{}{instance, nil})
+			return instance, nil
+		}
+	}
+
+	gomock.InOrder(
+		e.mockClient.EXPECT().ComputeCreate(gomock.Any(), gomock.Any()).Return(mockID, nil).Times(1),
+		e.mockClient.EXPECT().ComputeGet(gomock.Any(), mockID).DoAndReturn(getInstance(compute.Instance_RUNNING)),
+		e.mockClient.EXPECT().ComputeGet(gomock.Any(), mockID).DoAndReturn(getInstance(compute.Instance_STOPPED)),
+		e.mockClient.EXPECT().ComputeGet(gomock.Any(), mockID).DoAndReturn(getInstance(compute.Instance_RUNNING)),
 	)
 }
 

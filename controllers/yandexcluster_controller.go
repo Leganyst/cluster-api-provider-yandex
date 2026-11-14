@@ -21,23 +21,25 @@ import (
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/conditions"
+	"sigs.k8s.io/cluster-api/util/paused"
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	yandex "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client"
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud/scope"
 	loadbalancer "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud/services/loadbalancers"
+	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud/ycerrors"
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/options"
 )
 
@@ -63,7 +65,7 @@ func (r *YandexClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	defer cancel()
 
 	yandexCluster := &infrav1.YandexCluster{}
-	if err := r.Client.Get(ctx, req.NamespacedName, yandexCluster); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, yandexCluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -80,7 +82,13 @@ func (r *YandexClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	if annotations.IsPaused(cluster, yandexCluster) {
+	// Surface the paused state in the Paused condition (v1beta2 contract) and stop here if the
+	// YandexCluster or the owning Cluster is paused: a paused object must not be reconciled.
+	isPaused, _, err := paused.EnsurePausedCondition(ctx, r.Client, cluster, yandexCluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if isPaused {
 		logger.Info("YandexCluster or owning Cluster is marked as paused, not reconciling")
 		return ctrl.Result{}, nil
 	}
@@ -117,25 +125,29 @@ func (r *YandexClusterReconciler) reconcile(ctx context.Context, clusterScope *s
 	if !controllerutil.ContainsFinalizer(clusterScope.YandexCluster, infrav1.ClusterFinalizer) {
 		controllerutil.AddFinalizer(clusterScope.YandexCluster, infrav1.ClusterFinalizer)
 
-		logger.Info("Finalizer added to YandexCluster, requeueing")
-		return ctrl.Result{Requeue: true}, nil
+		// The finalizer is persisted when the scope is closed. That update triggers the next
+		// reconcile by itself, so an explicit requeue is not needed.
+		logger.Info("Finalizer added to YandexCluster")
+		return ctrl.Result{}, nil
 	}
 
 	// Get loadbalancer service and reconcile load balancer.
 	lb := loadbalancer.New(clusterScope)
 	if err := lb.Reconcile(ctx); err != nil {
-		conditions.MarkFalse(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition,
-			"load balancer reconcile error", clusterv1.ConditionSeverityError, "%s", err.Error())
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+			infrav1.LoadBalancerReconcileFailedReason, ycerrors.Message(err))
 		return ctrl.Result{}, fmt.Errorf("error reconciling load balancer: %w", err)
 	}
 
 	active, err := lb.IsActive(ctx)
 	if err != nil {
-		conditions.MarkFalse(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition,
-			"load balancer reconcile error", clusterv1.ConditionSeverityError, "%s", err.Error())
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+			infrav1.LoadBalancerReconcileFailedReason, ycerrors.Message(err))
 		return ctrl.Result{}, fmt.Errorf("error reconciling load balancer: %w", err)
 	}
 	if !active {
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+			infrav1.LoadBalancerProvisioningReason, "Load balancer is not active yet")
 		logger.Info("load balancer instance not active, requeueing")
 		return ctrl.Result{RequeueAfter: RequeueDuration}, nil
 	}
@@ -144,15 +156,15 @@ func (r *YandexClusterReconciler) reconcile(ctx context.Context, clusterScope *s
 	// and YandexCluster status.
 	state, err := lb.Describe(ctx)
 	if err != nil {
-		conditions.MarkFalse(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition,
-			"load balancer reconcile error", clusterv1.ConditionSeverityError, "%s", err.Error())
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+			infrav1.LoadBalancerReconcileFailedReason, ycerrors.Message(err))
 		return ctrl.Result{}, fmt.Errorf("error reconciling load balancer: %w", err)
 	}
 
 	switch {
 	// The load balancer has been created.
 	case clusterScope.YandexCluster.Spec.ControlPlaneEndpoint.Host == "" && clusterScope.YandexCluster.Spec.ControlPlaneEndpoint.Port == 0:
-		clusterScope.YandexCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+		clusterScope.YandexCluster.Spec.ControlPlaneEndpoint = infrav1.APIEndpoint{
 			Host: state.ListenerAddress,
 			Port: state.ListenerPort,
 		}
@@ -160,8 +172,8 @@ func (r *YandexClusterReconciler) reconcile(ctx context.Context, clusterScope *s
 			ListenerAddress: state.ListenerAddress,
 			ListenerPort:    state.ListenerPort,
 		}
-		conditions.MarkTrue(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition)
-		clusterScope.SetReady()
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionTrue, infrav1.LoadBalancerActiveReason, "")
+		clusterScope.SetProvisioned()
 		return ctrl.Result{}, nil
 
 	// The load balancer has been recreated.
@@ -170,13 +182,15 @@ func (r *YandexClusterReconciler) reconcile(ctx context.Context, clusterScope *s
 			ListenerAddress: state.ListenerAddress,
 			ListenerPort:    state.ListenerPort,
 		}
-		conditions.MarkTrue(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition)
-		clusterScope.SetReady()
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionTrue, infrav1.LoadBalancerActiveReason, "")
+		clusterScope.SetProvisioned()
 		return ctrl.Result{}, nil
 
 	default:
-		return ctrl.Result{},
-			fmt.Errorf("YandexCluster controlPlaneEndpoint differs from the load balancer listener values. The cluster has become unrecoverable and should be manually deleted")
+		err := fmt.Errorf("YandexCluster controlPlaneEndpoint differs from the load balancer listener values. The cluster has become unrecoverable and should be manually deleted")
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+			infrav1.LoadBalancerEndpointMismatchReason, err.Error())
+		return ctrl.Result{}, err
 	}
 }
 
@@ -193,8 +207,8 @@ func (r *YandexClusterReconciler) reconcileDelete(ctx context.Context, clusterSc
 	lb := loadbalancer.New(clusterScope)
 	deleted, err := lb.Delete(ctx)
 	if err != nil {
-		conditions.MarkFalse(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition,
-			clusterv1.DeletionFailedReason, clusterv1.ConditionSeverityWarning, "")
+		setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+			infrav1.LoadBalancerDeletionFailedReason, ycerrors.Message(err))
 		return ctrl.Result{}, fmt.Errorf("error deleting load balancer  %w", err)
 	}
 
@@ -205,31 +219,39 @@ func (r *YandexClusterReconciler) reconcileDelete(ctx context.Context, clusterSc
 	}
 
 	logger.V(1).Info("load balancer is being deleted, requeueing")
-	conditions.MarkFalse(clusterScope.YandexCluster, infrav1.LoadBalancerReadyCondition,
-		clusterv1.DeletingReason, clusterv1.ConditionSeverityInfo, "")
+	setLoadBalancerCondition(clusterScope.YandexCluster, metav1.ConditionFalse,
+		infrav1.LoadBalancerDeletingReason, "Load balancer is being deleted")
 	return ctrl.Result{RequeueAfter: RequeueDuration}, nil
+}
+
+// setLoadBalancerCondition sets the LoadBalancerReady condition of the YandexCluster.
+func setLoadBalancerCondition(yandexCluster *infrav1.YandexCluster, status metav1.ConditionStatus, reason, message string) {
+	conditions.Set(yandexCluster, metav1.Condition{
+		Type:    infrav1.LoadBalancerReadyCondition,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *YandexClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	c, err := ctrl.NewControllerManagedBy(mgr).
+	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.YandexCluster{}).
-		WithEventFilter(predicates.ResourceNotPaused(ctrl.LoggerFrom(ctx))).
-		Build(r)
-	if err != nil {
-		return err
-	}
-
-	return c.Watch(
-		source.Kind(mgr.GetCache(), &clusterv1.Cluster{}),
-		handler.EnqueueRequestsFromMapFunc(
-			util.ClusterToInfrastructureMapFunc(
-				ctx,
-				infrav1.GroupVersion.WithKind("YandexCluster"),
-				mgr.GetClient(),
-				&infrav1.YandexCluster{},
+		// Paused objects are not filtered out here: the controller has to see them to keep the
+		// Paused condition up to date. Reconcile returns early for paused objects instead.
+		WithEventFilter(predicates.ResourceIsChanged(mgr.GetScheme(), ctrl.LoggerFrom(ctx))).
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(
+				util.ClusterToInfrastructureMapFunc(
+					ctx,
+					infrav1.GroupVersion.WithKind("YandexCluster"),
+					mgr.GetClient(),
+					&infrav1.YandexCluster{},
+				),
 			),
-		),
-		predicates.ClusterUnpaused(ctrl.LoggerFrom(ctx)),
-	)
+			builder.WithPredicates(predicates.ClusterPausedTransitions(mgr.GetScheme(), ctrl.LoggerFrom(ctx))),
+		).
+		Complete(r)
 }

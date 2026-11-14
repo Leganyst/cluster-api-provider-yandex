@@ -28,7 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/cluster-api/api/v1beta1"
+	"sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -71,7 +71,7 @@ func TestMachineScope_GetBootstrapData(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(scp).ToNot(BeNil())
 
-	get, err := scp.GetBootstrapData()
+	get, err := scp.GetBootstrapData(context.Background())
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(get).To(Equal(want))
 
@@ -83,7 +83,7 @@ func TestMachineScope_GetBootstrapData(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(scp).ToNot(BeNil())
 
-	get, err = scp.GetBootstrapData()
+	get, err = scp.GetBootstrapData(context.Background())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(get).To(BeZero())
 }
@@ -103,9 +103,9 @@ func fakeScopeWithSecret(secret *corev1.Secret) (*scope.MachineScope, error) {
 		return nil, err
 	}
 
-	cm := &v1beta1.Machine{
-		Spec: v1beta1.MachineSpec{
-			Bootstrap: v1beta1.Bootstrap{
+	cm := &v1beta2.Machine{
+		Spec: v1beta2.MachineSpec{
+			Bootstrap: v1beta2.Bootstrap{
 				DataSecretName: &secret.Name,
 			},
 		},

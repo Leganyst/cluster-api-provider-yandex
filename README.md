@@ -16,9 +16,17 @@
 
 ## Совместимость провайдера с Cluster API
 
-| Версия провайдера | Версия Cluster API | Совместимость |
-| :---: | :---: | :---: |
-| v1alpha1 | v1beta1 (v1.x) | ✓ |
+| Версия провайдера | Версия API провайдера | Cluster API | Контракт Cluster API | Kubernetes в управляющем кластере | Kubernetes в создаваемом кластере |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| v0.3.x | v1alpha1 | v1.14 | v1beta2 | 1.33–1.37 | 1.31–1.37 (по умолчанию 1.35) |
+| v0.1.x, v0.2.x | v1alpha1 | v1.6 | v1beta1 | — | 1.31 |
+
+Диапазоны версий Kubernetes для v0.3 взяты из [таблицы версий Cluster API](https://cluster-api.sigs.k8s.io/reference/versions) для выпуска v1.14.
+
+> [!IMPORTANT]
+> Версия v0.3 несовместима с v0.2: поля `status` ресурсов `YandexCluster` и `YandexMachine` изменены под контракт v1beta2 без новой версии API. Кластеры, созданные провайдером v0.2, нужно пересоздать. Что и почему изменено, описано в [заметках об обновлении](docs/upgrade-notes-ru.md).
+
+Версию Kubernetes в создаваемом кластере определяет не провайдер, а `kubeadm` и `kubelet` из [образа ОС узлов](#подготовьте-образ-ос-для-узлов-кластера). Провайдер отвечает за виртуальные машины, сеть и балансировщик.
 
 Чтобы развернуть кластер Kubernetes в Yandex Cloud с помощью Cluster API:
 1. [Подготовьте облако к работе](#подготовьте-облако-к-работе).
@@ -81,19 +89,19 @@
 ## Настройте окружение
 
 1. Установите следующие инструменты:
-    * [Go](https://go.dev/doc/install) версии 1.22.0 и выше;
+    * [Go](https://go.dev/doc/install) версии 1.26.0 и выше (нужен только для сборки из исходного кода);
     * [docker](https://www.docker.com/) версии 17.03 и выше;
-    * [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) версии 1.11.3 и выше;
-    * [clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start#install-clusterctl) версии 1.5.0 и выше.
+    * [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) версии, совместимой с управляющим кластером;
+    * [clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start#install-clusterctl) версии 1.14.x.
 
-1. Настройте для `kubectl` доступ к управляющему кластеру Kubernetes:
+1. Настройте для `kubectl` доступ к управляющему кластеру Kubernetes версии 1.33–1.37:
     * [Managed Service for Kubernetes](https://yandex.cloud/ru/docs/managed-kubernetes/operations/connect/#kubectl-connect);
     * [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#interacting-with-your-cluster).
 
 1. Склонируйте репозиторий `cluster-api-provider-yandex` и перейдите в директорию с проектом:
 
     ```bash
-    git clone https://github.com/yandex-cloud/cluster-api-provider-yandex.git
+    git clone https://github.com/Leganyst/cluster-api-provider-yandex.git
     cd cluster-api-provider-yandex
     ```
 
@@ -101,14 +109,24 @@
 
 [Образ](https://yandex.cloud/ru/docs/compute/concepts/image) ОС, который будет развернут на узлах создаваемого кластера, должен быть подготовлен для работы с Kubernetes Cluster API, а также совместим с Compute Cloud.
 
-Вы можете использовать готовый образ ОС на основе Ubuntu 24.04, подготовленный нами для работы с Kubernetes версии 1.31.4. Для этого при [формировании манифеста кластера](#сформируйте-манифесты-кластера) в переменной `YANDEX_CONTROL_PLANE_MACHINE_IMAGE_ID` укажите идентификатор образа `fd8a3kknu25826s8hbq3`.
+Версия Kubernetes в образе должна совпадать с версией в манифесте кластера (переменная `KUBERNETES_VERSION`, по умолчанию `v1.35.10`).
+
+### Требования к образу для Kubernetes 1.35
+
+| Требование | Почему |
+| --- | --- |
+| `kubeadm`, `kubelet`, `kubectl` версии 1.35.x и `cloud-init` | Узел настраивается через `cloud-init`, который запускает `kubeadm` из образа |
+| cgroup v2 | В Kubernetes 1.35 `kubelet` по умолчанию не запускается на узле с cgroup v1 (`failCgroupV1: true`) |
+| containerd 2.x | Kubernetes 1.35 — последняя версия с поддержкой containerd 1.x; с containerd 1.x узел нельзя будет обновить до 1.36 |
+| Драйвер cgroup `systemd` и у containerd, и у `kubelet` | При разных драйверах `kubelet` не запускает поды |
+| Режим kube-proxy `iptables` или `nftables` | Режим IPVS в Kubernetes 1.35 объявлен устаревшим |
 
 > [!IMPORTANT]
-> Образ создан исключительно в ознакомительных целях, использовать его в промышленной эксплуатации не рекомендуется.
+> Готовый образ `fd8a3kknu25826s8hbq3` (Ubuntu 24.04) из оригинального репозитория подготовлен для Kubernetes **1.31.4**. С версией по умолчанию он не подойдет. Чтобы использовать его, задайте `KUBERNETES_VERSION=v1.31.4` при [формировании манифеста кластера](#сформируйте-манифесты-кластера). Образ создан в ознакомительных целях, использовать его в промышленной эксплуатации не рекомендуется.
 
-Вы можете подготовить собственный образ ОС, следуя инструкции ниже:
+Чтобы подготовить собственный образ ОС:
 
-1. [Соберите](https://image-builder.sigs.k8s.io/capi/capi) образ ОС с помощью утилиты [Image Builder](https://github.com/kubernetes-sigs/image-builder).
+1. [Соберите](https://image-builder.sigs.k8s.io/capi/capi) образ ОС с помощью утилиты [Image Builder](https://github.com/kubernetes-sigs/image-builder), указав версию Kubernetes 1.35.x.
 
     См. также [Подготовить образ диска для Compute Cloud](https://yandex.cloud/ru/docs/compute/operations/image-create/custom-image).
 
@@ -116,89 +134,106 @@
 
 ## Получите Docker-образ с провайдером Yandex Cloud
 
-Вы можете [использовать готовый Docker-образ](#использовать-готовый-docker-образ) с провайдером Yandex Cloud из публичного [реестра](https://yandex.cloud/ru/docs/container-registry/concepts/registry) Yandex Container Registry или [собрать его самостоятельно](#собрать-docker-образ-из-исходного-кода) из исходного кода.
+Вы можете [использовать готовый Docker-образ](#использовать-готовый-docker-образ) или [собрать его самостоятельно](#собрать-docker-образ-из-исходного-кода) из исходного кода.
 
 ### Использовать готовый Docker-образ
 
-1. [Аутентифицируйтесь](https://yandex.cloud/ru/docs/container-registry/operations/authentication#cred-helper) в реестре Container Registry с помощью Docker credential helper.
+При создании тега выпуска образ этого форка публикуется в GitHub Container Registry (workflow `.github/workflows/release-push.yml`):
 
-1. Добавьте в переменную окружения `IMG` путь к Docker-образу с провайдером Yandex Cloud в публичном реестре:
+```text
+ghcr.io/leganyst/cluster-api-provider-yandex:<тег_выпуска>
+```
 
-    ```bash
-    export IMG=cr.yandex/crpsjg1coh47p81vh2lc/capy/cluster-api-provider-yandex:latest
-    ```
+Путь к образу уже записан в файле `infrastructure-components.yaml` соответствующего выпуска, отдельно указывать его не нужно.
 
 ### Собрать Docker-образ из исходного кода
 
-1. [Создайте](https://yandex.cloud/ru/docs/container-registry/operations/registry/registry-create) реестр Container Registry и сохраните его идентификатор.
-1. [Аутентифицируйтесь](https://yandex.cloud/ru/docs/container-registry/operations/authentication#cred-helper) в реестре Container Registry с помощью Docker credential helper.
-1. Добавьте в переменную окружения `IMG` путь, по которому собранный Docker-образ будет сохранен в реестре:
-
-    ```bash
-    export IMG=cr.yandex/<идентификатор_реестра>/cluster-api-provider-yandex:<тег>
-    ```
-
-1. Если вы собираете Docker-образ на компьютере с архитектурой, отличной от [AMD64](https://ru.wikipedia.org/wiki/X86-64), отредактируйте в [Makefile](Makefile) блок `docker-build`:
-
-    ```text
-    docker build --platform linux/amd64 -t ${IMG} .
-    ```
+1. Выберите реестр, доступный управляющему кластеру, и аутентифицируйтесь в нем (`docker login`).
 
 1. Запустите Docker daemon.
 
-1. Соберите Docker-образ и загрузите его в реестр:
+1. Соберите Docker-образ и загрузите его в реестр. Путь к образу складывается из переменных `REGISTRY`, `IMAGE_NAME` и `TAG`:
 
     ```bash
-    make docker-build docker-push
+    make docker-build docker-push REGISTRY=<реестр> TAG=<тег>
     ```
+
+    Например, `REGISTRY=cr.yandex/<идентификатор_реестра> TAG=v0.3.0` даст образ `cr.yandex/<идентификатор_реестра>/cluster-api-provider-yandex:v0.3.0`. Полный путь можно задать и одной переменной `IMG`.
+
+1. Соберите артефакты выпуска для `clusterctl` с тем же образом:
+
+    ```bash
+    make release REGISTRY=<реестр> TAG=<тег>
+    ```
+
+    В каталоге `out/` появятся файлы `infrastructure-components.yaml`, `metadata.yaml` и шаблоны кластера.
 
 ## Установите провайдер Yandex Cloud и провайдер Kubernetes Cluster API
 
-1. Инициализируйте управляющий кластер:
+Провайдер устанавливается утилитой `clusterctl`. Провайдера Yandex Cloud нет во встроенном списке `clusterctl`, поэтому его репозиторий нужно указать в файле конфигурации.
+
+1. Добавьте провайдер в конфигурацию `clusterctl` (по умолчанию `$XDG_CONFIG_HOME/cluster-api/clusterctl.yaml`):
+
+    * чтобы установить опубликованный выпуск:
+
+        ```yaml
+        providers:
+          - name: "yandex"
+            url: "https://github.com/Leganyst/cluster-api-provider-yandex/releases/latest/infrastructure-components.yaml"
+            type: "InfrastructureProvider"
+        ```
+
+    * чтобы установить артефакты, собранные командой `make release`, скопируйте каталог `out/` в `<каталог>/infrastructure-yandex/<тег>/` (например, `~/capy-repo/infrastructure-yandex/v0.3.0/`) и укажите путь к файлу:
+
+        ```yaml
+        providers:
+          - name: "yandex"
+            url: "file:///<каталог>/infrastructure-yandex/<тег>/infrastructure-components.yaml"
+            type: "InfrastructureProvider"
+        ```
+
+1. Установите в управляющий кластер Cluster API, [cert-manager](https://cert-manager.io/) и провайдер Yandex Cloud:
 
     ```bash
-    clusterctl init
+    clusterctl init \
+      --core cluster-api:v1.14.4 \
+      --bootstrap kubeadm:v1.14.4 \
+      --control-plane kubeadm:v1.14.4 \
+      --infrastructure yandex
     ```
 
-    В управляющий кластер будут установлены основные компоненты Kubernetes Cluster API, а также [cert-manager](https://cert-manager.io/).
-
-1. Создайте в управляющем кластере [CustomResourceDefinitions](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/) для создаваемого кластера:
-
-    ```bash
-    make install
-    ```
-
-1. Получите список установленных CRD:
-
-    ```bash
-    kubectl get crd | grep cluster.x-k8s.io
-    ```
-
-    Чтобы получить манифест конкретного CRD, выполните команду:
-
-    ```bash
-    kubectl get crd <имя_CRD> \
-      --output yaml
-    ```
-
-1. Создайте пространство имен для провайдера Yandex Cloud:
-
-    ```bash
-    kubectl create namespace capy-system
-    ```
-
-1. Создайте секрет с авторизованным ключом сервисного аккаунта Yandex Cloud:
+1. Создайте секрет с авторизованным ключом сервисного аккаунта Yandex Cloud и перезапустите провайдер, чтобы он прочитал ключ:
 
     ```bash
     kubectl create secret generic yc-sa-key \
       --from-file=key=<путь_к_файлу_с_авторизованным_ключом> \
       --namespace capy-system
 
-1. Установите провайдер Yandex Cloud:
+    kubectl rollout restart deployment capy-controller-manager \
+      --namespace capy-system
+    ```
+
+    Этот ключ используется для кластеров, у которых не задан `identityRef`. Если каждый кластер ссылается на собственный ресурс `YandexIdentity` (шаблон `templates/cluster-template-with-identity.yaml`), секрет `yc-sa-key` не нужен.
+
+1. Убедитесь, что провайдер запущен:
 
     ```bash
-    make deploy
+    kubectl get providers --all-namespaces
+    kubectl get pods --namespace capy-system
     ```
+
+<details>
+<summary>Установка без clusterctl (для разработки)</summary>
+
+После `clusterctl init` без `--infrastructure yandex` выполните:
+
+```bash
+make deploy IMG=<путь_к_образу>
+```
+
+Команда установит CRD и контроллер из каталога `bases/` в пространство имен `capy-system`.
+
+</details>
 
 ## Сформируйте манифесты кластера
 

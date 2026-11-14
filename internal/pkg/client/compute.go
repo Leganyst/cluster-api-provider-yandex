@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/metrics"
 	"github.com/yandex-cloud/go-genproto/yandex/cloud/compute/v1"
@@ -36,7 +37,12 @@ func (c *YandexClient) ComputeCreate(ctx context.Context, req *compute.CreateIns
 		return "", err
 	}
 
-	return meta.(*compute.CreateInstanceMetadata).InstanceId, nil
+	md, ok := meta.(*compute.CreateInstanceMetadata)
+	if !ok {
+		return "", fmt.Errorf("could not get compute instance ID from create operation metadata")
+	}
+
+	return md.GetInstanceId(), nil
 }
 
 // ComputeDelete sends compute delete request to Yandex Cloud and returns operation status.

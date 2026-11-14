@@ -1,22 +1,26 @@
+version: "2"
+run:
+  go: "1.26"
 linters:
+  # "standard" is errcheck, govet, ineffassign, staticcheck and unused:
+  # the same set golangci-lint v1 enabled by default.
+  default: standard
   # Enable specific linter
-  # https://golangci-lint.run/usage/linters/
+  # https://golangci-lint.run/docs/linters/
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        # Consider missing comments as an error
+        - name: exported
+          severity: error
+        # Validate package comments
+        - name: package-comments
+          severity: error
+  # golangci-lint v2 applies no exclusion presets unless they are listed here,
+  # so missing comments on exported symbols and packages are reported
+  # (v1 needed "issues.include: EXC0012..EXC0015" for that).
+formatters:
   enable:
     - gofmt
-    - govet
-    - revive
-linters-settings:
-  revive:
-    rules:
-      # Consider missing comments as an error
-      - name: exported
-        severity: error
-      # Validate package comments
-      - name: package-comments
-        severity: error
-issues:
-  include:
-     - EXC0012 # exported (.+) should have comment or be unexported
-     - EXC0013 # package comment should be of the form "(.+)...
-     - EXC0014 # comment on exported (.+) should be of the form "(.+)..."
-     - EXC0015 # should have a package comment

@@ -44,7 +44,7 @@ type ClusterGetter interface {
 
 // ClusterSetter is an interface which can set cluster information.
 type ClusterSetter interface {
-	SetReady()
+	SetProvisioned()
 }
 
 // Cluster is an interface which can get and set cluster information.

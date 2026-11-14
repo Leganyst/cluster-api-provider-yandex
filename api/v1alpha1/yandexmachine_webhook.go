@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"reflect"
 
 	"github.com/pkg/errors"
@@ -25,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -34,32 +34,27 @@ var log = logf.Log.WithName("yandexmachine-resource")
 
 // SetupWebhookWithManager creates an YandexMachine validation webhook.
 func (ym *YandexMachine) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(ym).
+	return ctrl.NewWebhookManagedBy(mgr, ym).
+		WithValidator(&YandexMachineValidator{}).
 		Complete()
 }
 
 //nolint:lll // controller-gen marker
-//+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachine,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachines,verbs=create;update,versions=v1alpha1,name=validation.yandexmachines.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1beta1
+//+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachine,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachines,verbs=create;update,versions=v1alpha1,name=validation.yandexmachines.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1
 
-var (
-	_ webhook.Defaulter = &YandexMachine{}
-	_ webhook.Validator = &YandexMachine{}
-)
+// YandexMachineValidator implements a validating webhook for YandexMachine.
+type YandexMachineValidator struct{}
 
-// Default implements webhook.Defaulter so a webhook will be registered for the type.
-func (ym *YandexMachine) Default() {
-	log.Info("default", "name", ym.Name)
-}
+var _ admission.Validator[*YandexMachine] = &YandexMachineValidator{}
 
-// ValidateCreate implements webhook.Validator so a webhook will be registered for the type.
-func (ym *YandexMachine) ValidateCreate() (admission.Warnings, error) {
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexMachineValidator) ValidateCreate(_ context.Context, ym *YandexMachine) (admission.Warnings, error) {
 	log.Info("validate create", "name", ym.Name)
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type.
-func (ym *YandexMachine) ValidateUpdate(oldRaw runtime.Object) (admission.Warnings, error) {
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexMachineValidator) ValidateUpdate(_ context.Context, oldRaw, ym *YandexMachine) (admission.Warnings, error) {
 	log.Info("validate update", "name", ym.Name)
 
 	newYandexMachine, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ym)
@@ -91,8 +86,8 @@ func (ym *YandexMachine) ValidateUpdate(oldRaw runtime.Object) (admission.Warnin
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.Validator so a webhook will be registered for the type.
-func (ym *YandexMachine) ValidateDelete() (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type.
+func (*YandexMachineValidator) ValidateDelete(_ context.Context, ym *YandexMachine) (admission.Warnings, error) {
 	log.Info("validate delete", "name", ym.Name)
 	return nil, nil
 }

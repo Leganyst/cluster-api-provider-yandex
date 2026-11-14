@@ -10,7 +10,9 @@ import (
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	yandex "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client"
 
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	"k8s.io/utils/ptr"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -77,7 +79,27 @@ type ClusterScope struct {
 
 // PatchObject persists the cluster configuration and status.
 func (c *ClusterScope) PatchObject(ctx context.Context) error {
-	return c.patchHelper.Patch(ctx, c.YandexCluster)
+	// Always update the Ready condition by summarizing the state of the other conditions.
+	if err := conditions.SetSummaryCondition(c.YandexCluster, c.YandexCluster, infrav1.ReadyCondition,
+		conditions.ForConditionTypes{infrav1.LoadBalancerReadyCondition},
+		conditions.CustomMergeStrategy{
+			MergeStrategy: conditions.DefaultMergeStrategy(
+				conditions.ComputeReasonFunc(conditions.GetDefaultComputeMergeReasonFunc(
+					infrav1.NotReadyReason,
+					infrav1.ReadyUnknownReason,
+					infrav1.ReadyReason,
+				)),
+			),
+		},
+	); err != nil {
+		return errors.Wrapf(err, "failed to set %s condition", infrav1.ReadyCondition)
+	}
+
+	// Patch the object, ignoring conflicts on the conditions owned by this controller.
+	return c.patchHelper.Patch(ctx, c.YandexCluster, patch.WithOwnedConditions{Conditions: []string{
+		infrav1.ReadyCondition,
+		infrav1.LoadBalancerReadyCondition,
+	}})
 }
 
 // Close closes the current scope persisting the cluster configuration and status.
@@ -96,9 +118,10 @@ func (c *ClusterScope) Name() string {
 	return c.Cluster.GetName()
 }
 
-// SetReady sets the YandexCluster Ready Status.
-func (c *ClusterScope) SetReady() {
-	c.YandexCluster.Status.Ready = true
+// SetProvisioned reports that the initial provisioning of the YandexCluster infrastructure is completed
+// (status.initialization.provisioned, v1beta2 contract).
+func (c *ClusterScope) SetProvisioned() {
+	c.YandexCluster.Status.Initialization.Provisioned = ptr.To(true)
 }
 
 // GetClient gets client for YandexCloud API.
@@ -127,7 +150,7 @@ func (c *ClusterScope) GetLabels() infrav1.Labels {
 }
 
 // ControlPlaneEndpoint gets the cluster API endpoit.
-func (c *ClusterScope) ControlPlaneEndpoint() clusterv1.APIEndpoint {
+func (c *ClusterScope) ControlPlaneEndpoint() infrav1.APIEndpoint {
 	return c.YandexCluster.Spec.ControlPlaneEndpoint
 }
 
@@ -186,15 +209,20 @@ func getYandexClient(ctx context.Context, params ClusterScopeParams) (yandex.Cli
 				params.YandexCluster.Spec.IdentityRef.Namespace, params.YandexCluster.Spec.IdentityRef.Name)
 		}
 
+		// A cluster which references an identity must be managed with the key of that identity only.
+		// Falling back to the default key here would silently create or delete cloud resources on
+		// behalf of another service account, and it would hide the real problem with the identity.
 		yc, err := params.YandexClientGetter.GetFromSecret(ctx,
 			params.Client, identity.Spec.SecretName, params.YandexCluster.Spec.IdentityRef.Namespace, identity.Spec.KeyName)
-		if err == nil {
-			return yc, nil
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to build YandexCloud client from identity %s/%s",
+				params.YandexCluster.Spec.IdentityRef.Namespace, params.YandexCluster.Spec.IdentityRef.Name)
 		}
-		// no need to return error here, as we can fall back to default client
+
+		return yc, nil
 	}
 
-	// Fall back to default client if no identity is provided
+	// Use the default client if no identity is provided
 	yc, err := params.YandexClientGetter.GetDefault(ctx)
 	if err != nil {
 		return nil, err

@@ -17,17 +17,17 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"net"
+	"context"
 	"net/netip"
 	"reflect"
+	"strings"
+	"unicode"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -47,26 +47,21 @@ var yandexclusterlog = logf.Log.WithName("yandexcluster-resource")
 
 // SetupWebhookWithManager creates a validation webhook
 func (c *YandexCluster) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(c).
+	return ctrl.NewWebhookManagedBy(mgr, c).
+		WithValidator(&YandexClusterValidator{}).
 		Complete()
 }
 
 //nolint:lll // controller-gen marker
-//+kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexcluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexclusters,versions=v1alpha1,name=validation.yandexclusters.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1beta1
+//+kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexcluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexclusters,versions=v1alpha1,name=validation.yandexclusters.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
 
-var (
-	_ webhook.Defaulter = &YandexCluster{}
-	_ webhook.Validator = &YandexCluster{}
-)
+// YandexClusterValidator implements a validating webhook for YandexCluster.
+type YandexClusterValidator struct{}
 
-// Default implements webhook.Defaulter so a webhook will be registered for the type.
-func (c *YandexCluster) Default() {
-	yandexclusterlog.Info("default", "name", c.Name)
-}
+var _ admission.Validator[*YandexCluster] = &YandexClusterValidator{}
 
-// ValidateCreate implements webhook.Validator so a webhook will be registered for the type.
-func (c *YandexCluster) ValidateCreate() (admission.Warnings, error) {
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexClusterValidator) ValidateCreate(_ context.Context, c *YandexCluster) (admission.Warnings, error) {
 	yandexclusterlog.Info("validate create", "name", c.Name)
 	var allErrs field.ErrorList
 
@@ -84,7 +79,7 @@ func (c *YandexCluster) ValidateCreate() (admission.Warnings, error) {
 		)
 	}
 
-	if !reflect.DeepEqual(c.Spec.ControlPlaneEndpoint, clusterv1.APIEndpoint{}) {
+	if !reflect.DeepEqual(c.Spec.ControlPlaneEndpoint, APIEndpoint{}) {
 		allErrs = append(allErrs, isControlPlaneEndpointValid(c.Spec.ControlPlaneEndpoint)...)
 	}
 
@@ -95,14 +90,10 @@ func (c *YandexCluster) ValidateCreate() (admission.Warnings, error) {
 	return nil, apierrors.NewInvalid(GroupVersion.WithKind("YandexCluster").GroupKind(), c.Name, allErrs)
 }
 
-// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type.
-func (c *YandexCluster) ValidateUpdate(oldRaw runtime.Object) (admission.Warnings, error) {
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type.
+func (*YandexClusterValidator) ValidateUpdate(_ context.Context, old, c *YandexCluster) (admission.Warnings, error) {
 	yandexclusterlog.Info("validate update", "name", c.Name)
 	var allErrs field.ErrorList
-	old, ok := oldRaw.(*YandexCluster)
-	if !ok {
-		return nil, apierrors.NewBadRequest("failed to convert runtime Object to YandexCluster")
-	}
 
 	if !reflect.DeepEqual(old.Spec.LoadBalancer, c.Spec.LoadBalancer) {
 		allErrs = append(allErrs,
@@ -113,7 +104,7 @@ func (c *YandexCluster) ValidateUpdate(oldRaw runtime.Object) (admission.Warning
 	// We allow you to change the ControlPlaneEndpoint only if this field has not been set before.
 	// In all other cases, this field is immutable.
 	if !reflect.DeepEqual(c.Spec.ControlPlaneEndpoint, old.Spec.ControlPlaneEndpoint) {
-		if reflect.DeepEqual(old.Spec.ControlPlaneEndpoint, clusterv1.APIEndpoint{}) {
+		if reflect.DeepEqual(old.Spec.ControlPlaneEndpoint, APIEndpoint{}) {
 			allErrs = append(allErrs, isControlPlaneEndpointValid(c.Spec.ControlPlaneEndpoint)...)
 		} else {
 			allErrs = append(allErrs,
@@ -128,8 +119,8 @@ func (c *YandexCluster) ValidateUpdate(oldRaw runtime.Object) (admission.Warning
 	return nil, apierrors.NewInvalid(GroupVersion.WithKind("YandexCluster").GroupKind(), c.Name, allErrs)
 }
 
-// ValidateDelete implements webhook.Validator so a webhook will be registered for the type.
-func (c *YandexCluster) ValidateDelete() (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type.
+func (*YandexClusterValidator) ValidateDelete(_ context.Context, c *YandexCluster) (admission.Warnings, error) {
 	yandexclusterlog.Info("validate delete", "name", c.Name)
 	return nil, nil
 }
@@ -138,11 +129,10 @@ func (c *YandexCluster) ValidateDelete() (admission.Warnings, error) {
 func getAddrType(s string) AddrType {
 	parsedIP, err := netip.ParseAddr(s)
 	if err != nil {
-		if _, errfqdn := net.LookupHost(s); errfqdn == nil {
+		if isFQDN(s) {
 			return FQDN
 		}
 		return Unknown
-
 	}
 	if parsedIP.Is4() {
 		return IPV4
@@ -151,6 +141,27 @@ func getAddrType(s string) AddrType {
 		return IPV6
 	}
 	return Unknown
+}
+
+// isFQDN checks that s is a syntactically valid fully qualified domain name.
+//
+// The check is purely syntactic on purpose. An admission webhook must give the same answer
+// for the same object, no matter where and when it runs, so it must not resolve the name:
+// DNS may be unavailable or slow from the management cluster, and the name of a control
+// plane endpoint does not have to be resolvable from there at all.
+func isFQDN(s string) bool {
+	if len(validation.IsDNS1123Subdomain(s)) != 0 {
+		return false
+	}
+
+	labels := strings.Split(s, ".")
+	if len(labels) < 2 {
+		return false
+	}
+
+	// A top level domain is never all-numeric (RFC 3696, section 2).
+	// This also rejects malformed IPv4 addresses like 1000.10.10.10.
+	return strings.ContainsFunc(labels[len(labels)-1], unicode.IsLetter)
 }
 
 // isIPv4 checks if address is an ipv4 address
@@ -165,7 +176,7 @@ func isIPv4orFQDN(s string) bool {
 }
 
 // isControlPlaneEndpointValid checks if ControlPlaneEndpoint has valid fields
-func isControlPlaneEndpointValid(cp clusterv1.APIEndpoint) field.ErrorList {
+func isControlPlaneEndpointValid(cp APIEndpoint) field.ErrorList {
 	var errs field.ErrorList
 	if cp.Host == "" || cp.Port == 0 {
 		errs = append(errs,

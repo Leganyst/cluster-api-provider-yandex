@@ -35,8 +35,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/caarlos0/env/v10"
@@ -67,9 +68,13 @@ func init() {
 
 func main() {
 	var metricsAddr string
+	var secureMetrics bool
 	var enableLeaderElection bool
 	var probeAddr string
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
+	flag.BoolVar(&secureMetrics, "metrics-secure", true,
+		"Serve the metrics endpoint over HTTPS and require authentication and authorization "+
+			"(TokenReview and SubjectAccessReview against the management cluster) for it.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -89,11 +94,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The metrics endpoint used to be protected by a kube-rbac-proxy sidecar. Its image
+	// (gcr.io/kubebuilder/kube-rbac-proxy) is not available anymore, and controller-runtime
+	// can do the same authentication and authorization itself.
+	metricsOptions := metricsserver.Options{
+		BindAddress:   metricsAddr,
+		SecureServing: secureMetrics,
+	}
+	if secureMetrics {
+		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
-		},
+		Scheme:                 scheme,
+		Metrics:                metricsOptions,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "yandex.cluster.x-k8s.io",

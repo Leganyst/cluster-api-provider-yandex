@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1_test
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -41,13 +42,13 @@ func TestYandexMachine_ValidateUpdate(t *testing.T) {
 			oldMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: nil,
+					ProviderID: "",
 				},
 			},
 			newMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: ptr.To("yandex://instance-id"),
+					ProviderID: "yandex://instance-id",
 				},
 			},
 			wantErr: false,
@@ -57,14 +58,14 @@ func TestYandexMachine_ValidateUpdate(t *testing.T) {
 			oldMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: nil,
+					ProviderID: "",
 					ZoneID:     ptr.To("ru-central1-a"),
 				},
 			},
 			newMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: ptr.To("yandex://instance-id"),
+					ProviderID: "yandex://instance-id",
 					ZoneID:     ptr.To("ru-central1-b"),
 				},
 			},
@@ -75,7 +76,7 @@ func TestYandexMachine_ValidateUpdate(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(_ *testing.T) {
-			warn, err := test.newMachine.ValidateUpdate(test.oldMachine)
+			warn, err := (&infrav1.YandexMachineValidator{}).ValidateUpdate(context.Background(), test.oldMachine, test.newMachine)
 			if test.wantErr {
 				g.Expect(err).To(HaveOccurred())
 			} else {

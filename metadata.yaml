@@ -1,0 +1,17 @@
+# clusterctl metadata: maps release series of this provider to the Cluster API contract they implement.
+# The contract of the latest series must match the label on the CRDs (config/crd/kustomization.yaml).
+# See https://cluster-api.sigs.k8s.io/developer/providers/contracts/clusterctl
+apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3
+kind: Metadata
+releaseSeries:
+  # v0.3: Cluster API v1.14, v1beta2 contract.
+  - major: 0
+    minor: 3
+    contract: v1beta2
+  # v0.1 and v0.2: Cluster API v1.6, v1beta1 contract.
+  - major: 0
+    minor: 2
+    contract: v1beta1
+  - major: 0
+    minor: 1
+    contract: v1beta1

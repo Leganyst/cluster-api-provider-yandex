@@ -1,8 +1,16 @@
 
-# Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+# Image of the controller manager.
+# The image is published to the registry of the fork owner, not to the Yandex registry of the
+# upstream project. Override REGISTRY, IMAGE_NAME and TAG, or the whole IMG, to publish elsewhere.
+REGISTRY ?= ghcr.io/leganyst
+IMAGE_NAME ?= cluster-api-provider-yandex
+TAG ?= dev
+IMG ?= $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+# Directory for the release artifacts consumed by clusterctl.
+RELEASE_DIR ?= out
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.25.0
+# Cluster API v1.14 supports management clusters v1.33 - v1.37, so envtest must not be older than 1.33.
+ENVTEST_K8S_VERSION ?= 1.36.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -118,14 +126,25 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/crd | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
+# The manifests reference the placeholder image "controller:latest". It is replaced in the rendered
+# output, so that building manifests never modifies files tracked by git.
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build bases | kubectl apply -f -
+	$(KUSTOMIZE) build bases | sed 's#image: controller:latest#image: $(IMG)#' | kubectl apply -f -
 
 .PHONY: undeploy
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build bases | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+
+##@ Release
+
+.PHONY: release
+release: manifests kustomize ## Build release artifacts for clusterctl (infrastructure-components.yaml, metadata.yaml, cluster templates).
+	mkdir -p $(RELEASE_DIR)
+	$(KUSTOMIZE) build bases | sed 's#image: controller:latest#image: $(IMG)#' > $(RELEASE_DIR)/infrastructure-components.yaml
+	cp metadata.yaml $(RELEASE_DIR)/metadata.yaml
+	cp templates/cluster-template*.yaml $(RELEASE_DIR)/
+	@echo "Release artifacts for image $(IMG) are in $(RELEASE_DIR)"
 
 ##@ Build Dependencies
 
@@ -142,10 +161,12 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.3.0
-CONTROLLER_TOOLS_VERSION ?= v0.16.5
-GOLANGCI_LINT_VER ?= v1.63.4
-MOCKGEN_VERSION ?= v0.4.0
+# Keep in sync with the Makefile and go.mod of the Cluster API release this provider is built against.
+KUSTOMIZE_VERSION ?= v5.7.0
+CONTROLLER_TOOLS_VERSION ?= v0.21.0
+SETUP_ENVTEST_VERSION ?= v0.24.1
+GOLANGCI_LINT_VER ?= v2.12.2
+MOCKGEN_VERSION ?= v0.6.0
 
 KUSTOMIZE_INSTALL_SCRIPT ?= "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
 .PHONY: kustomize
@@ -166,9 +187,9 @@ $(MOCKGEN): $(LOCALBIN)
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VER)
+	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VER)

@@ -13,9 +13,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	capierrors "sigs.k8s.io/cluster-api/errors"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -76,13 +76,33 @@ type MachineScope struct {
 }
 
 // PatchObject persists the cluster configuration and status.
-func (m *MachineScope) PatchObject() error {
-	return m.patchHelper.Patch(context.TODO(), m.YandexMachine)
+func (m *MachineScope) PatchObject(ctx context.Context) error {
+	// Always update the Ready condition by summarizing the state of the other conditions.
+	if err := conditions.SetSummaryCondition(m.YandexMachine, m.YandexMachine, infrav1.ReadyCondition,
+		conditions.ForConditionTypes{infrav1.InstanceReadyCondition},
+		conditions.CustomMergeStrategy{
+			MergeStrategy: conditions.DefaultMergeStrategy(
+				conditions.ComputeReasonFunc(conditions.GetDefaultComputeMergeReasonFunc(
+					infrav1.NotReadyReason,
+					infrav1.ReadyUnknownReason,
+					infrav1.ReadyReason,
+				)),
+			),
+		},
+	); err != nil {
+		return errors.Wrapf(err, "failed to set %s condition", infrav1.ReadyCondition)
+	}
+
+	// Patch the object, ignoring conflicts on the conditions owned by this controller.
+	return m.patchHelper.Patch(ctx, m.YandexMachine, patch.WithOwnedConditions{Conditions: []string{
+		infrav1.ReadyCondition,
+		infrav1.InstanceReadyCondition,
+	}})
 }
 
 // Close closes the current scope persisting the cluster configuration and status.
-func (m *MachineScope) Close() error {
-	return m.PatchObject()
+func (m *MachineScope) Close(ctx context.Context) error {
+	return m.PatchObject(ctx)
 }
 
 // Name returns the YandexMachine name.
@@ -100,23 +120,20 @@ func (m *MachineScope) IsControlPlane() bool {
 	return util.IsControlPlaneMachine(m.Machine)
 }
 
-// SetReady sets the YandexMachine Ready Status.
-func (m *MachineScope) SetReady() {
-	m.YandexMachine.Status.Ready = true
+// SetProvisioned reports that the initial provisioning of the YandexMachine infrastructure is completed
+// (status.initialization.provisioned, v1beta2 contract).
+func (m *MachineScope) SetProvisioned() {
+	m.YandexMachine.Status.Initialization.Provisioned = ptr.To(true)
 }
 
 // GetProviderID returns the YandexMachine providerID from the spec.
 func (m *MachineScope) GetProviderID() string {
-	if m.YandexMachine.Spec.ProviderID != nil {
-		return *m.YandexMachine.Spec.ProviderID
-	}
-	return ""
+	return m.YandexMachine.Spec.ProviderID
 }
 
 // SetProviderID sets the YandexMachine providerID in spec.
 func (m *MachineScope) SetProviderID(instanceID string) {
-	pid := fmt.Sprintf("%s%s", ProviderIDPrefix, instanceID)
-	m.YandexMachine.Spec.ProviderID = ptr.To(pid)
+	m.YandexMachine.Spec.ProviderID = fmt.Sprintf("%s%s", ProviderIDPrefix, instanceID)
 }
 
 // SetAddresses sets the addresses field on the YandexMachine.
@@ -140,10 +157,10 @@ func (m *MachineScope) SetInstanceStatus(v infrav1.InstanceStatus) {
 }
 
 // GetBootstrapData returns the bootstrap data from the secret in the Machine's bootstrap.dataSecretName.
-func (m *MachineScope) GetBootstrapData() (string, error) {
+func (m *MachineScope) GetBootstrapData(ctx context.Context) (string, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: m.Namespace(), Name: *m.Machine.Spec.Bootstrap.DataSecretName}
-	if err := m.client.Get(context.TODO(), key, secret); err != nil {
+	if err := m.client.Get(ctx, key, secret); err != nil {
 		return "", errors.Wrapf(err, "failed to retrieve bootstrap data secret for YandexMachine %s/%s", m.Namespace(), m.Name())
 	}
 
@@ -153,16 +170,6 @@ func (m *MachineScope) GetBootstrapData() (string, error) {
 	}
 
 	return string(value), nil
-}
-
-// SetFailureMessage sets the YandexMachine status failure message.
-func (m *MachineScope) SetFailureMessage(v error) {
-	m.YandexMachine.Status.FailureMessage = ptr.To(v.Error())
-}
-
-// SetFailureReason sets the YandexMachine status failure reason.
-func (m *MachineScope) SetFailureReason(v capierrors.MachineStatusError) {
-	m.YandexMachine.Status.FailureReason = &v
 }
 
 // GetClient gets client for YandexCloud api.
@@ -181,8 +188,8 @@ func parseProviderID(id string) string {
 }
 
 // GetInstanceReq returns YandexCloud compute instance creation request.
-func (m *MachineScope) GetInstanceReq() (*compute.CreateInstanceRequest, error) {
-	bootstrapData, err := m.GetBootstrapData()
+func (m *MachineScope) GetInstanceReq(ctx context.Context) (*compute.CreateInstanceRequest, error) {
+	bootstrapData, err := m.GetBootstrapData(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,8 @@
-commonLabels:
-  cluster.x-k8s.io/v1beta1: v1alpha1
+# The label maps a Cluster API contract version to the versions of the CRDs that implement it.
+# It must match the contract declared in metadata.yaml (release series v0.3 -> v1beta2).
+labels:
+- pairs:
+    cluster.x-k8s.io/v1beta2: v1alpha1
 # This kustomization.yaml is not intended to be run by itself,
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default

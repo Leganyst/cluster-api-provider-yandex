@@ -9,6 +9,7 @@ import (
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	yandex "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -105,7 +106,7 @@ func (s *IdentityScope) CheckConnectWithIdentity(ctx context.Context) error {
 	// TODO: Check permissions? Test connection?
 
 	// We don't care about the client close result
-	yandexClient.Close(ctx)
+	_ = yandexClient.Close(ctx)
 
 	return nil
 }
@@ -137,6 +138,11 @@ func (s *IdentityScope) SetSecretFinalizerAndOwner(ctx context.Context) error {
 func (s *IdentityScope) RemoveSecretFinalizer(ctx context.Context) error {
 	identitySecret, err := s.getSecret(ctx)
 	if err != nil {
+		// The secret does not exist (it was never created or is already deleted), so there is no
+		// finalizer to remove. Returning the error here would block the deletion of the identity forever.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
 
@@ -195,7 +201,12 @@ func (s *IdentityScope) generateIdentityLabelSelector() client.MatchingLabels {
 
 // PersistIndentityChanges persists the identity changes to the API server.
 func (s *IdentityScope) PersistIndentityChanges(ctx context.Context) error {
-	return s.patchHelper.Patch(ctx, s.Identity)
+	return s.patchHelper.Patch(ctx, s.Identity, patch.WithOwnedConditions{Conditions: []string{
+		infrav1.IdentityReadyCondition,
+		infrav1.IdentityValidCondition,
+		infrav1.IdentitySecretUpdatedCondition,
+		infrav1.IdentityLinkedClustersUpdatedCondition,
+	}})
 }
 
 // IsSecretChanged checks if the secret of the identity has changed.

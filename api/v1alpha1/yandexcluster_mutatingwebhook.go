@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/pkg/errors"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -11,14 +12,14 @@ import (
 )
 
 //nolint:lll // controller-gen marker
-//+kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexcluster-identitylink,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexclusters,versions=v1alpha1,name=mutation.yandexclusters.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1beta1
+//+kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexcluster-identitylink,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexclusters,versions=v1alpha1,name=mutation.yandexclusters.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
 
 type yandexClusterAdmitter struct {
-	decoder *admission.Decoder
+	decoder admission.Decoder
 }
 
 // NewYandexClusterAdmitter returns a new admission.Handler that adds identityRef labels to YandexCluster objects.
-func NewYandexClusterAdmitter(decoder *admission.Decoder) admission.Handler {
+func NewYandexClusterAdmitter(decoder admission.Decoder) admission.Handler {
 	return &yandexClusterAdmitter{decoder: decoder}
 }
 
@@ -41,35 +42,33 @@ func (m *yandexClusterAdmitter) Handle(_ context.Context, req admission.Request)
 	if yandexCluster.Spec.IdentityRef != nil {
 		key, val := generateIdentityLabelKeyAndValue(yandexCluster.Spec.IdentityRef.Name, yandexCluster.Spec.IdentityRef.Namespace)
 		currentValue := yandexCluster.GetLabels()[key]
-
+		// Identity labels which do not match the current identityRef, e.g. after the namespace of
+		// the reference has been changed. They have to be removed: a stale label keeps the cluster
+		// linked to the old YandexIdentity, which then can never be deleted.
+		staleKeys := staleIdentityLabelKeys(yandexCluster.GetLabels(), key)
 		yandexclusterlog.Info("identityRef label", "key", key, "value", val, "currentValue", currentValue)
-		// if the label does not exist or the value is different, we need to add the label
-		if currentValue != val {
+		// if the label does not exist, the value is different or stale labels exist, we need to update labels
+		if currentValue != val || len(staleKeys) > 0 {
 			upd := yandexCluster.DeepCopy()
 			if upd.Labels == nil {
 				upd.Labels = map[string]string{}
 			}
-
 			// add new label
 			upd.Labels[key] = val
-
-			// remove old label if it exists
-			if currentValue != "" {
-				delete(upd.Labels, currentValue)
+			// remove labels of the previous identity
+			for _, staleKey := range staleKeys {
+				delete(upd.Labels, staleKey)
 			}
 
 			rawUpdate, err := json.Marshal(upd)
 			if err != nil {
-				admission.Errored(http.StatusInternalServerError, errors.Wrap(err, "failed to marshal object"))
+				return admission.Errored(http.StatusInternalServerError, errors.Wrap(err, "failed to marshal object"))
 			}
 
 			yandexclusterlog.Info("updating identityRef label", "key", key, "value", val)
-
 			return admission.PatchResponseFromRaw(req.Object.Raw, rawUpdate)
 		}
-
 		yandexclusterlog.Info("identityRef label already exists", "key", key, "value", val)
-
 		return admission.Allowed("identityRef label already exists")
 	}
 
@@ -106,7 +105,7 @@ func (m *yandexClusterAdmitter) Handle(_ context.Context, req admission.Request)
 
 			rawUpdate, err := json.Marshal(upd)
 			if err != nil {
-				admission.Errored(http.StatusInternalServerError, errors.Wrap(err, "failed to marshal object"))
+				return admission.Errored(http.StatusInternalServerError, errors.Wrap(err, "failed to marshal object"))
 			}
 
 			yandexclusterlog.Info("removing identityRef label", "key", key)
@@ -120,4 +119,16 @@ func (m *yandexClusterAdmitter) Handle(_ context.Context, req admission.Request)
 
 	// if identityRef was nil and still is nil, nothing to do
 	return admission.Allowed("allowed")
+}
+
+// staleIdentityLabelKeys returns the keys of identity labels other than currentKey.
+func staleIdentityLabelKeys(labels map[string]string, currentKey string) []string {
+	var keys []string
+	for key := range labels {
+		if strings.HasPrefix(key, identityLabelPrefix) && key != currentKey {
+			keys = append(keys, key)
+		}
+	}
+
+	return keys
 }
