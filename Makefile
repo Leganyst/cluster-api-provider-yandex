@@ -2,7 +2,7 @@
 # Image of the controller manager.
 # The image is published to the registry of the fork owner, not to the Yandex registry of the
 # upstream project. Override REGISTRY, IMAGE_NAME and TAG, or the whole IMG, to publish elsewhere.
-REGISTRY ?= ghcr.io/leganyst
+REGISTRY ?= ghcr.io/k8s-pier
 IMAGE_NAME ?= cluster-api-provider-yandex
 TAG ?= dev
 IMG ?= $(REGISTRY)/$(IMAGE_NAME):$(TAG)
