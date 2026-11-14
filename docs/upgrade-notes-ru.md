@@ -388,3 +388,87 @@ CRD переехали из `config/crd/bases` в `core/config/crd/bases`. Ст�
   `InfrastructureReady` у `Machine` станет `False`. Будет ли MHC из-за этого
   пересоздавать машину, зависит от его настройки; это пункт 5 ручной
   проверки на живом облаке. На паузе кластера MHC не работает.
+
+## Этап 3. Шаблоны кластера
+
+Файлы: `templates/cluster-template.yaml`,
+`templates/cluster-template-with-identity.yaml`.
+
+### Что изменено
+
+| Что | Было | Стало |
+|---|---|---|
+| `Cluster`, `MachineDeployment` | `cluster.x-k8s.io/v1beta1` | `cluster.x-k8s.io/v1beta2` |
+| `KubeadmControlPlane` | `controlplane.cluster.x-k8s.io/v1beta1` | `.../v1beta2` |
+| `KubeadmConfigTemplate` | `bootstrap.cluster.x-k8s.io/v1beta1` | `.../v1beta2` |
+| Ссылки между объектами | `apiVersion`, `kind`, `name` | `apiGroup`, `kind`, `name` |
+| Ссылка на шаблон машин в KCP | `spec.machineTemplate.infrastructureRef` | `spec.machineTemplate.spec.infrastructureRef` |
+| `kubeletExtraArgs` | словарь `cloud-provider: external` | список `- name: cloud-provider` / `value: external` |
+| Версия Kubernetes по умолчанию | `v1.31.4` (в шаблоне с identity — `v1.25.14`) | `v1.35.10` |
+
+Зачем: API v1beta1 ядра, KCP и CABPK объявлен устаревшим в CAPI v1.11 и
+перестанет обслуживаться в v1.16. Изменения формы объектов взяты из
+[руководства v1.10 → v1.11](https://release-1-11.cluster-api.sigs.k8s.io/developer/providers/migrations/v1.10-to-v1.11)
+и сверены с шаблонами самого Cluster API
+(`test/e2e/data/infrastructure-docker/main/bases`).
+
+В ссылке v1beta2 нет версии API: ядро находит её по метке контракта на CRD
+(`cluster.x-k8s.io/v1beta2: v1alpha1`, этап 2). Поэтому шаблон не придётся
+менять, если у провайдера появится новая версия API.
+
+`v1.35.10` — последний патч ветки 1.35 на 2026-11-14
+(`https://dl.k8s.io/release/stable-1.35.txt`).
+
+В начало шаблонов добавлен комментарий с требованиями к образу узла (раздел 6
+требований): cgroup v2, containerd 2.x, драйвер cgroup `systemd`, kubeadm,
+kubelet и kubectl версии 1.35.x, cloud-init, режим kube-proxy не IPVS.
+
+### Ошибки, найденные и исправленные в шаблонах
+
+1. **Дублирующийся ключ `name`** в `KubeadmConfigTemplate`
+   (`joinConfiguration.nodeRegistration`): ключ был указан дважды. Часть
+   разборщиков YAML на этом падает, остальные молча берут последнее значение.
+2. **Тип диска управляющих узлов брался из переменной рабочих узлов**
+   (`YANDEX_NODE_MACHINE_BOOT_DISK_TYPE`). Теперь используется
+   `YANDEX_CONTROL_PLANE_MACHINE_BOOT_DISK_TYPE`. Значение по умолчанию
+   прежнее (`network-ssd`). Тот, кто задавал тип диска управляющих узлов
+   через переменную рабочих узлов, должен задать новую переменную.
+3. **Шаблон с identity отставал от основного**: версия Kubernetes по
+   умолчанию в нём была `v1.25.14`. Теперь оба шаблона отличаются только
+   объектом `YandexIdentity`, полем `identityRef` и значением зоны по
+   умолчанию.
+
+### Что намеренно не сделано
+
+- Шаблон на основе `ClusterClass` не добавлен: его не было, и в задачу он не
+  входит.
+- Значение зоны по умолчанию в шаблоне с identity (`ru-central1-a`) оставлено,
+  хотя в основном шаблоне значения по умолчанию нет.
+
+### Проверка
+
+Управляющий кластер: kind v0.33.0, Kubernetes v1.37.0, Cluster API v1.14.4
+(ядро, KCP, CABPK), CAPY из этой ветки, установленный через clusterctl
+(этап 4).
+
+```
+clusterctl generate cluster capy-test --worker-machine-count 1 \
+  --from templates/cluster-template.yaml > cluster.yaml
+kubectl apply --dry-run=server -f cluster.yaml
+```
+
+Результат для обоих шаблонов: все объекты приняты сервером
+(`created (server dry run)`): `YandexCluster`, `Cluster`,
+`KubeadmControlPlane`, `MachineDeployment`, `KubeadmConfigTemplate`, два
+`YandexMachineTemplate`, для второго шаблона ещё `YandexIdentity`.
+
+Первая попытка проверки упала на вебхуке `YandexCluster` — это отдельная
+ошибка в манифестах провайдера, она описана и исправлена на этапе 4.
+
+### Что осталось непроверенным
+
+- Реальное создание узлов из шаблона: нужен образ с Kubernetes 1.35 и доступ
+  к облаку. Идентификатор готового образа из README (`fd8a3kknu25826s8hbq3`)
+  относится к Kubernetes 1.31.4 и для версии по умолчанию не подходит.
+- Команды `preKubeadmCommands` и шаблон `{{ v1.local_hostname }}` перенесены
+  без изменений и на новом образе не проверялись.
