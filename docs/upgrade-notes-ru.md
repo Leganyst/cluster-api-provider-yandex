@@ -645,7 +645,7 @@ clusterctl v1.14.4.
 
 Этот раздел — отчёт об ошибках, найденных при чтении кода и при проверке в
 kind. Они не связаны с версиями библиотек и есть в исходном `v0.2.0`.
-Исправления пунктов 1–9 сделаны отдельным коммитом, чтобы их можно было
+Исправления пунктов 1–8 и 10–11 сделаны отдельными коммитами, чтобы их можно было
 рассмотреть (и при желании предложить в оригинальный репозиторий) независимо
 от обновления.
 
@@ -734,6 +734,34 @@ DNS-имя минимум из двух частей, последняя час�
 **9. Сообщения условий менялись при каждом проходе** — исправлено на этапе 2
 функцией `ycerrors.Message` (см. этап 2).
 
+**10. `YandexIdentity` без секрета нельзя было удалить.**
+`internal/pkg/cloud/scope/identity.go`. При удалении identity провайдер
+снимает свой финализатор с секрета. Если секрета нет (его не создали или уже
+удалили), чтение секрета возвращало ошибку, и финализатор самой identity не
+снимался никогда — объект навсегда оставался в состоянии удаления.
+Найдено при проверке в kind.
+Исправление: отсутствие секрета при удалении не считается ошибкой. Тест:
+`TestIdentityScope_RemoveSecretFinalizerWithoutSecret`.
+
+**11. Шаблон с identity не работал с `clusterctl generate`.**
+`templates/cluster-template-with-identity.yaml`. В шаблоне у `YandexIdentity`
+и в `identityRef` было жёстко записано пространство имён `capy-system`. Но
+`clusterctl generate cluster` переносит все объекты шаблона в целевое
+пространство имён, а ссылку внутри `spec` не трогает. В итоге identity
+создавалась в одном пространстве имён, а кластер искал её в другом:
+
+```
+failed to get identity capy-system/capy-test: YandexIdentity... "capy-test" not found
+```
+
+Найдено при проверке в kind.
+Исправление: в обоих местах используется переменная `${NAMESPACE}`, которую
+clusterctl задаёт сам. Identity и её секрет теперь находятся в пространстве
+имён кластера. Проверено в kind: identity находится, а при заведомо
+испорченном ключе кластер получает ошибку
+`failed to build YandexCloud client from identity default/capy-idt` и не
+переходит на ключ по умолчанию (исправление 5).
+
 ### Исправлено на других этапах
 
 | Проблема | Этап |
@@ -785,3 +813,200 @@ DNS-имя минимум из двух частей, последняя час�
 не входит.
 
 **G. Переход на Yandex go-sdk v2** — см. этап 1.
+
+## Этап 5. Документация
+
+`README.md` обновлён:
+
+- таблица совместимости: версии провайдера, Cluster API, контракта и
+  Kubernetes (диапазоны сверены с
+  [таблицей версий CAPI](https://cluster-api.sigs.k8s.io/reference/versions):
+  для v1.14 управляющий кластер 1.33–1.37, создаваемый — 1.31–1.37);
+- установка через `clusterctl init --infrastructure yandex` с примером
+  `clusterctl.yaml`; прежний способ (`make install`, `make deploy`) оставлен
+  как вариант для разработки;
+- требования к образу узла для Kubernetes 1.35 и предупреждение, что готовый
+  образ из оригинального репозитория рассчитан на 1.31.4;
+- образ контроллера: реестр форка и переменные `REGISTRY`, `IMAGE_NAME`,
+  `TAG`;
+- предупреждение о несовместимости v0.3 с v0.2 и ссылка на эти заметки.
+
+Разделы о подготовке облака, подключении к кластеру, CCM и CNI не менялись.
+
+## Как проверить самому
+
+Все команды выполняются из корня репозитория в Linux или WSL. Нужны Go 1.26,
+`make`, `git`; для пунктов 3–5 ещё Docker, kind, kubectl и clusterctl
+v1.14.x. Инструменты сборки (controller-gen, kustomize, setup-envtest,
+golangci-lint, mockgen) Makefile скачивает сам в каталог `bin/`.
+
+Если репозиторий лежит на диске Windows, а сборка идёт в WSL, вынесите
+каталог инструментов на файловую систему Linux — иначе envtest работает очень
+медленно: `make test LOCALBIN=$HOME/capy-bin`.
+
+**1. Сборка, тесты, линтер.**
+
+```bash
+make build test lint
+git status --short   # должно быть пусто: сгенерированные файлы актуальны
+```
+
+Ожидается: три строки `ok` для пакетов `api/v1alpha1`, `controllers`,
+`internal/pkg/cloud/scope`; `Ran 35 of 35 Specs`; `0 issues.`
+
+**2. В коде не осталось устаревшего API.**
+
+```bash
+grep -rn "v1beta1" --include=*.go . | grep -v _test.go
+```
+
+Ожидается пустой вывод: ни пакетов `core/v1beta1`, ни `util/deprecated`.
+
+```bash
+grep -n "cluster.x-k8s.io/v1beta" config/crd/kustomization.yaml metadata.yaml
+grep -n "contract" metadata.yaml
+```
+
+Ожидается метка `cluster.x-k8s.io/v1beta2: v1alpha1` и `contract: v1beta2`
+для серии 0.3.
+
+**3. Установка через clusterctl в kind.**
+
+```bash
+kind create cluster --name capy-mgmt
+
+make release TAG=v0.3.0
+docker build -t ghcr.io/leganyst/cluster-api-provider-yandex:v0.3.0 .
+kind load docker-image ghcr.io/leganyst/cluster-api-provider-yandex:v0.3.0 --name capy-mgmt
+
+mkdir -p ~/capy-repo/infrastructure-yandex/v0.3.0
+cp out/* ~/capy-repo/infrastructure-yandex/v0.3.0/
+cat > /tmp/clusterctl.yaml <<EOF
+providers:
+  - name: "yandex"
+    url: "file://$HOME/capy-repo/infrastructure-yandex/v0.3.0/infrastructure-components.yaml"
+    type: "InfrastructureProvider"
+EOF
+
+clusterctl init --config /tmp/clusterctl.yaml \
+  --core cluster-api:v1.14.4 --bootstrap kubeadm:v1.14.4 \
+  --control-plane kubeadm:v1.14.4 --infrastructure yandex
+
+kubectl get providers -A
+kubectl -n capy-system get pods
+kubectl -n capy-system logs deploy/capy-controller-manager | grep -i error
+```
+
+Ожидается: провайдер `infrastructure-yandex` версии `v0.3.0`, под `Running`,
+ошибок в журнале нет.
+
+**4. Шаблоны.**
+
+```bash
+export YANDEX_CONTROL_PLANE_MACHINE_IMAGE_ID=fd8test YANDEX_FOLDER_ID=b1gtest \
+  YANDEX_NETWORK_ID=enptest YANDEX_SUBNET_ID=e9btest YANDEX_ZONE_ID=ru-central1-a
+clusterctl generate cluster capy-test --config /tmp/clusterctl.yaml \
+  --worker-machine-count 1 --from templates/cluster-template.yaml > /tmp/cluster.yaml
+kubectl apply --dry-run=server -f /tmp/cluster.yaml
+```
+
+Ожидается: семь строк `created (server dry run)`, ошибок нет. Идентификаторы
+здесь вымышленные: проверяется только, что манифесты проходят схему и
+вебхуки.
+
+**5. Контракт v1beta2 глазами ядра (без облака).**
+
+```bash
+kubectl apply -f /tmp/cluster.yaml
+kubectl get cluster capy-test -o jsonpath='{.status.conditions[?(@.type=="InfrastructureReady")].message}{"\n"}'
+```
+
+Ожидается сообщение `YandexCluster status.initialization.provisioned is
+false` — ядро читает поле нового контракта.
+
+```bash
+kubectl patch cluster capy-test --type merge -p '{"spec":{"paused":true}}'
+kubectl get yandexcluster capy-test -o jsonpath='{.status.conditions[?(@.type=="Paused")].status}{"\n"}'
+```
+
+Ожидается `True`. После проверки: `kubectl delete -f /tmp/cluster.yaml`,
+`kind delete cluster --name capy-mgmt`.
+
+**6. Живое облако** — раздел 9 требований, выполняется вручную. На что
+смотреть дополнительно:
+
+- у `YandexMachine` после остановки ВМ: `kubectl get yandexmachine` покажет
+  `STATE=STOPPED`, `READY=False`, `PROVISIONED=true`; в облаке ВМ та же;
+- после запуска ВМ и снятия паузы `READY` снова `True`, `providerID` прежний;
+- количество открытых соединений контроллера не растёт со временем
+  (исправление 1 из раздела «Найденные проблемы»).
+
+## Что не сделано и не проверено: сводка
+
+| Что | Почему |
+|---|---|
+| Проверка на живом облаке (создание, масштабирование, удаление кластера, усыпление) | Нужны доступ к облаку и деньги; порядок описан в разделе 9 требований |
+| Образ узла с Kubernetes 1.35 | Агент образ не собирает; требования записаны в README и шаблонах |
+| Работа слоя `internal/pkg/client` с Yandex go-sdk v0.41.0 | Тесты работают через mock-интерфейс и этот слой не покрывают |
+| Переход на Yandex go-sdk v2 | Отдельная задача, см. этап 1 |
+| Workflow GitHub (CI, публикация образа, выпуск) | Запускаются только на GitHub; локально проверены команды, которые они вызывают |
+| Pull request в `master` форка | Ветка отправлена в форк, но утилиты `gh` на машине нет; PR создаётся по ссылке из итогового отчёта |
+| Обновление существующих кластеров с v0.2 на v0.3 | Несовместимое изменение API принято по умолчанию (раздел 8 требований) |
+| Повторное создание ВМ после сбоя записи `providerID` (пункт A) | Требует нового вызова API облака, без облака не проверить |
+| Поведение `MachineHealthCheck` при остановленной ВМ | Проверяется только на живом кластере |
+| Чтение метрик с действительным токеном | Проверен только отказ без токена |
+
+### Расхождения с исходными требованиями
+
+| Требование | Что сделано | Почему |
+|---|---|---|
+| Вебхуки на `CustomDefaulter` и `CustomValidator` | `admission.Validator[T]` | В controller-runtime v0.24 `Custom*` уже помечены устаревшими |
+| Перенести старые условия и `failureReason` в `status.deprecated.v1beta1` | Удалены без переноса | Нужные для этого пакеты удаляются из CAPI вместе с v1beta1; см. этап 2 |
+| go-sdk и go-genproto «последние версии» | v0.41.0 и v0.131.0 | Более новые выпуски go-sdk не компилируются |
+| Ветка `main` | Основная ветка форка называется `master` | PR направлен в `master` |
+| «Не менять поведение сверх перечисленного» | Исправлены найденные ошибки, часть меняет поведение | По прямому указанию владельца найти и решить проблемы; каждое изменение поведения отмечено в разделе «Найденные проблемы» |
+
+### Решения владельца (раздел 8 требований)
+
+Использованы значения по умолчанию:
+
+1. Поля изменены прямо в `v1alpha1`, без `v1alpha2` и конверсии.
+2. Целевая версия Cluster API — v1.14 (v1.14.4).
+3. Изменения в оригинальный репозиторий не отправлялись.
+
+## Вывод `make build test lint` после последнего этапа
+
+Linux (WSL2, Ubuntu 24.04). Из вывода убраны строки загрузки модулей,
+служебные сообщения линтера и подробный журнал сценариев Ginkgo; строки
+результатов приведены без изменений.
+
+```
+go version go1.26.11 linux/amd64
+--- PASS: Test_isFQDN (0.00s)
+--- PASS: Test_yandexClusterAdmitter_Handle_identityChanged (0.00s)
+--- PASS: Test_yandexClusterAdmitter_Handle (0.00s)
+--- PASS: Test_yandexIdentityAdmitter_Handle (0.05s)
+--- PASS: TestContractVersionIsConsistent (0.01s)
+--- PASS: TestYandexCluster_ValidateCreate (0.00s)
+--- PASS: TestYandexCluster_ValidateUpdate (0.00s)
+--- PASS: TestYandexMachine_ValidateUpdate (0.00s)
+--- PASS: TestYandexMachineTemplate_ValidateCreate (0.00s)
+--- PASS: TestYandexMachineTemplate_ValidateUpdate (0.00s)
+PASS
+ok  	github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1	(cached)	coverage: 35.8% of statements
+Ran 35 of 35 Specs in 6.570 seconds
+SUCCESS! -- 35 Passed | 0 Failed | 0 Pending | 0 Skipped
+--- PASS: TestAPIs (6.57s)
+PASS
+ok  	github.com/yandex-cloud/cluster-api-provider-yandex/controllers	6.636s	coverage: 46.4% of statements
+?   	github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud	[no test files]
+--- PASS: TestNewClusterScope_IdentityIsNotReplacedByDefaultKey (0.08s)
+--- PASS: TestIdentityScope_RemoveSecretFinalizerWithoutSecret (0.00s)
+--- PASS: TestCLoudScope_GetLBName (0.00s)
+--- PASS: TestMachineScope_ProviderID (0.00s)
+--- PASS: TestMachineScope_GetBootstrapData (0.00s)
+PASS
+ok  	github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud/scope	0.150s	coverage: 26.4% of statements
+?   	github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/options	[no test files]
+0 issues.
+```
