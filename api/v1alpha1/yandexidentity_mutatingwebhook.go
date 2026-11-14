@@ -11,7 +11,7 @@ import (
 )
 
 //nolint:lll // controller-gen marker
-//+kubebuilder:webhook:verbs=delete,path=/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexidentity,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexidentities,versions=v1alpha1,name=mutation.yandexidentities.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1beta1
+//+kubebuilder:webhook:verbs=delete,path=/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexidentity,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=yandexidentities,versions=v1alpha1,name=mutation.yandexidentities.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
 
 type yandexIdentityAdmitter struct {
 	platformClient client.Client

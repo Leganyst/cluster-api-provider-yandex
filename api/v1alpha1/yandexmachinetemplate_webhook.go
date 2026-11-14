@@ -48,7 +48,7 @@ func (t *YandexMachineTemplate) SetupWebhookWithManager(mgr ctrl.Manager) error 
 		Complete()
 }
 
-//+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachinetemplate,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachinetemplates,verbs=create;update,versions=v1alpha1,name=validation.yandexmachinetemplates.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1beta1
+//+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachinetemplate,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachinetemplates,verbs=create;update,versions=v1alpha1,name=validation.yandexmachinetemplates.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1
 
 // YandexMachineTemplateValidator implements a validating webhook for YandexMachineTemplate.
 type YandexMachineTemplateValidator struct{}

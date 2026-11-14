@@ -8,9 +8,11 @@ namespace: capy-system
 # field above.
 namePrefix: capy-
 
-# Labels to add to all resources and selectors.
-#commonLabels:
-#  someName: someValue
+# The provider label is required by the clusterctl provider contract: clusterctl uses it to find
+# all the objects that belong to this provider (for upgrade, move and delete).
+labels:
+- pairs:
+    cluster.x-k8s.io/provider: infrastructure-yandex
 
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
@@ -46,7 +48,7 @@ resources:
 - ../certmanager
 
 patches:
-- path: manager_auth_proxy_patch.yaml
+- path: manager_metrics_patch.yaml
 - path: manager_namespace_env_var.yaml
 - path: webhookcainjection_patch.yaml
 - path: manager_webhook_patch.yaml

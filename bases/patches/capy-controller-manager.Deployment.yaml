@@ -16,6 +16,10 @@ spec:
             secretKeyRef:
               name: yc-sa-key
               key: key
+              # The default key is optional: without it the provider starts and serves the clusters
+              # that reference a YandexIdentity. A cluster without identityRef then fails with
+              # "default key is not set".
+              optional: true
         name: manager
       securityContext:
         runAsUser: 1000

@@ -472,3 +472,171 @@ kubectl apply --dry-run=server -f cluster.yaml
   относится к Kubernetes 1.31.4 и для версии по умолчанию не подходит.
 - Команды `preKubeadmCommands` и шаблон `{{ v1.local_hostname }}` перенесены
   без изменений и на новом образе не проверялись.
+
+## Этап 4. Выпуск для clusterctl
+
+Цель этапа: чтобы провайдер ставился командой
+`clusterctl init --infrastructure yandex`.
+Правила: [clusterctl provider contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/clusterctl).
+
+### Что изменено
+
+**`metadata.yaml`** (новый файл в корне). Сопоставляет серии выпусков
+провайдера с контрактом Cluster API: `v0.3 → v1beta2`, `v0.2` и
+`v0.1 → v1beta1`. По нему clusterctl решает, совместим ли провайдер с
+установленным ядром.
+
+**Тест `api/v1alpha1/contract_test.go`** (новый). Проверяет правило
+контракта: значение в `metadata.yaml` совпадает с меткой
+`cluster.x-k8s.io/<контракт>` на CRD и указывает на существующую версию API.
+Если поменять одно и забыть другое, тест упадёт.
+
+**`Makefile`:**
+
+- Путь образа задаётся переменными `REGISTRY` (по умолчанию
+  `ghcr.io/leganyst`), `IMAGE_NAME`, `TAG`; итоговое значение — `IMG`, его
+  по-прежнему можно задать целиком.
+- Новая цель `make release` собирает в каталог `out/` (переменная
+  `RELEASE_DIR`) артефакты выпуска: `infrastructure-components.yaml`,
+  `metadata.yaml`, оба шаблона кластера.
+- `make deploy` больше не меняет файлы под контролем git. Раньше он вызывал
+  `kustomize edit set image`, что переписывало
+  `config/manager/kustomization.yaml`. Теперь образ подставляется в готовый
+  вывод kustomize.
+
+**`config/default/kustomization.yaml`** — на все объекты добавлена метка
+`cluster.x-k8s.io/provider: infrastructure-yandex`. Её требует контракт
+clusterctl: по ней он находит объекты провайдера при обновлении, переносе и
+удалении.
+
+**`.github/workflows`:**
+
+- `release-push.yml` — образ публикуется в GitHub Container Registry владельца
+  репозитория (`ghcr.io/<владелец>/cluster-api-provider-yandex`), а не в
+  реестр Yandex. Секретов не нужно, хватает токена самого workflow.
+- `release-base.yml` — к выпуску GitHub прикладываются артефакты
+  `make release`.
+
+**Путь Go-модуля** оставлен `github.com/yandex-cloud/cluster-api-provider-yandex`.
+Причина: смена пути затрагивает импорты во всех файлах, раздувает разницу с
+оригиналом и осложняет перенос исправлений в обе стороны. На работу форка
+путь модуля не влияет: модуль никто не импортирует как библиотеку.
+
+### Что сломалось по пути (ошибки в манифестах оригинала)
+
+Обе ошибки делают провайдер неработоспособным и не связаны с обновлением
+версий: они есть в `v0.2.0`.
+
+1. **Образ `kube-rbac-proxy` больше не существует.** Манифест добавлял к
+   контроллеру второй контейнер `gcr.io/kubebuilder/kube-rbac-proxy:v0.13.1`
+   для защиты метрик. Реестр `gcr.io/kubebuilder` закрыт:
+
+   ```
+   $ docker manifest inspect gcr.io/kubebuilder/kube-rbac-proxy:v0.13.1
+   no such manifest: gcr.io/kubebuilder/kube-rbac-proxy:v0.13.1
+   ```
+
+   Под с таким контейнером не запустится (`ImagePullBackOff`).
+
+   Исправление: второй контейнер удалён, защиту метрик выполняет сам
+   controller-runtime (`filters.WithAuthenticationAndAuthorization`, тот же
+   способ применяется в актуальных шаблонах kubebuilder). В `main.go` добавлен
+   флаг `--metrics-secure` (по умолчанию `true`), адрес метрик по умолчанию
+   стал `:8443`. Файл `config/default/manager_auth_proxy_patch.yaml` заменён
+   на `manager_metrics_patch.yaml`. Роль с правами на `tokenreviews` и
+   `subjectaccessreviews` уже была в `config/rbac`.
+
+2. **Для mutating-вебхука не подставлялся сертификат.** В
+   `config/default/webhookcainjection_patch.yaml` аннотация cert-manager
+   была только у `ValidatingWebhookConfiguration`, а блок для
+   `MutatingWebhookConfiguration` остался закомментированным с момента
+   создания проекта. Mutating-вебхуки появились позже, вместе с
+   `YandexIdentity`. В итоге API-сервер не доверял сертификату вебхука и
+   отклонял **любое** создание или изменение `YandexCluster`:
+
+   ```
+   failed calling webhook "mutation.yandexclusters.infrastructure.cluster.x-k8s.io": ...
+   tls: failed to verify certificate: x509: certificate signed by unknown authority
+   ```
+
+   Исправление: блок раскомментирован.
+
+Кроме того:
+
+- **`admissionReviewVersions`** у всех вебхуков изменён с `v1beta1` на `v1`.
+  Версия `v1` — основная с Kubernetes 1.16, `v1beta1` сохранялась только для
+  совместимости.
+- **Секрет `yc-sa-key` стал необязательным** (`optional: true` в
+  `bases/patches/capy-controller-manager.Deployment.yaml`). Раньше без него
+  под не создавался, поэтому `clusterctl init` не мог завершиться успешно,
+  пока секрет не создан, а создать его до `init` нельзя — ещё нет
+  пространства имён. Теперь контроллер запускается и без ключа по умолчанию;
+  кластеры без `identityRef` в этом случае получают ошибку
+  `default key is not set`, кластеры с `YandexIdentity` работают.
+
+  После создания секрета под нужно перезапустить
+  (`kubectl -n capy-system rollout restart deploy/capy-controller-manager`):
+  ключ читается из переменной окружения при старте.
+
+### Проверка
+
+Окружение: Docker Desktop 29.6.1, kind v0.33.0 (Kubernetes v1.37.0),
+clusterctl v1.14.4.
+
+1. `make release TAG=v0.3.0`, артефакты скопированы в локальный репозиторий
+   `<каталог>/infrastructure-yandex/v0.3.0/`, он указан в `clusterctl.yaml`.
+2. `docker build`, образ загружен в kind (`kind load docker-image`).
+3. `clusterctl init --core cluster-api:v1.14.4 --bootstrap kubeadm:v1.14.4
+   --control-plane kubeadm:v1.14.4`, затем
+   `clusterctl init --infrastructure yandex`:
+
+   ```
+   Installing provider="infrastructure-yandex" version="v0.3.0" targetNamespace="capy-system"
+   deployment "capy-controller-manager" successfully rolled out
+   capy-system   infrastructure-yandex   InfrastructureProvider   yandex   v0.3.0
+   ```
+
+   Под `capy-controller-manager` в состоянии `Running`, перезапусков нет, в
+   журнале при старте ошибок нет.
+4. `clusterctl delete --infrastructure yandex --include-crd
+   --include-namespace` и повторная установка проходят.
+
+**Проверка контракта v1beta2 на живом ядре** (критерий готовности этапа 2).
+Из шаблона создан кластер. Ключа облака в тестовом окружении нет, поэтому
+готовность инфраструктуры имитировалась вручную: в `YandexCluster` записаны
+`spec.controlPlaneEndpoint` и статус.
+
+| Шаг | Что наблюдалось |
+|---|---|
+| Кластер создан | Провайдер выставил `Paused=False`. `Cluster` сообщает: `InfrastructureReady=False`, «YandexCluster status.initialization.provisioned is false» — ядро читает именно поле нового контракта, а не `status.ready` |
+| `spec.paused: true` у `Cluster` | У `YandexCluster` появилось `Paused=True`, «Cluster spec.paused is set to true» |
+| Пауза снята, в статус записано `initialization.provisioned: true` и `Ready=True` | `Cluster`: `status.initialization.infrastructureProvisioned=true`, `InfrastructureReady=True (Ready)`, `spec.controlPlaneEndpoint` скопирован из `YandexCluster` |
+| Далее | KCP создал `Machine` версии v1.35.10 и `YandexMachine`; провайдер выставил на ней `Paused=False` |
+
+Без ключа облака контроллер возвращает ошибку `default key is not set`;
+повторы идут с нарастающей задержкой (одна ошибка за 30 секунд через минуту
+после начала), горячего цикла нет.
+
+Эндпоинт метрик без учётных данных отвечает отказом
+(«the server has asked for the client to provide credentials»).
+
+### Что намеренно не сделано
+
+- **Публикация в оригинальный репозиторий** отдельными PR — по умолчанию нет
+  (раздел 8 требований).
+- **Сборка образа под несколько архитектур** в CI: как и раньше, собирается
+  образ под архитектуру сборочной машины (amd64).
+- **Уменьшение образа.** Образ занимает около 200 МБ: Yandex SDK подключает
+  клиенты всех сервисов облака. Сборка с `-ldflags "-s -w"` уменьшила бы его,
+  но это не относится к задаче.
+- **Устаревшие поля kustomize** (`patchesStrategicMerge`, `vars`) оставлены:
+  kustomize v5.7 их понимает и выдаёт предупреждение. Замена `vars` на
+  `replacements` — заметная перестройка манифестов.
+
+### Что осталось непроверенным
+
+- Workflow выпуска (`release-push.yml`, `release-base.yml`): запускаются
+  только на GitHub при создании тега. Локально проверены `make release` и
+  `docker build`.
+- Чтение метрик с действительным токеном (проверен только отказ без токена).
+- `ServiceMonitor` из `config/prometheus` (в сборку по умолчанию не входит).

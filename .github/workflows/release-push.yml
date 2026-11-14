@@ -8,46 +8,62 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   test:
     name: Run testsuite
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-  
+
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-  
+
       - name: Run test make target
         run: make test
 
   push:
     needs: [test]
-    name: Release pushed tag
-    runs-on: ubuntu-22.04
+    name: Build and push image
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Login to Yandex Cloud Container Registry
-        uses: yc-actions/yc-cr-login@v2
-        with:
-          yc-sa-json-credentials: ${{ secrets.CAPY_IMAGE_PUSHER_SA_JSON_KEY }} 
-
-      - name: Build, tag, and push image to Yandex CR
-        env:
-          CR_REGISTRY: crpsjg1coh47p81vh2lc
-          CR_REPOSITORY: capy/cluster-api-provider-yandex
-          IMAGE_TAG: ${{ github.ref_name }}
+      # The image goes to the GitHub Container Registry of the repository owner
+      # (ghcr.io/<owner>/cluster-api-provider-yandex), so no extra secrets are needed:
+      # the workflow token is enough. Image names must be lower case.
+      - name: Compute image name
+        id: image
         run: |
-          docker build -t cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:$IMAGE_TAG .
-          docker push cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:$IMAGE_TAG
-          docker tag cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:$IMAGE_TAG cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:latest
-          docker push cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:latest
+          echo "registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build, tag, and push image
+        env:
+          REGISTRY: ${{ steps.image.outputs.registry }}
+          TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          IMG="$REGISTRY/cluster-api-provider-yandex:$TAG"
+          docker build -t "$IMG" .
+          docker push "$IMG"
+          # "latest" follows release tags only, not manual runs from a branch.
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            docker tag "$IMG" "$REGISTRY/cluster-api-provider-yandex:latest"
+            docker push "$REGISTRY/cluster-api-provider-yandex:latest"
+          fi

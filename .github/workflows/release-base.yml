@@ -11,8 +11,24 @@ permissions:
 jobs:
   release:
     name: Release pushed tag
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Artifacts consumed by clusterctl: infrastructure-components.yaml, metadata.yaml and the
+      # cluster templates. The image reference inside infrastructure-components.yaml points to
+      # the image pushed by the "crpush" workflow for the same tag.
+      - name: Build release artifacts
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make release REGISTRY="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" TAG="$TAG"
+
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -21,4 +37,8 @@ jobs:
           gh release create "$tag" \
               --repo="$GITHUB_REPOSITORY" \
               --title="${tag#v}" \
-              --generate-notes
+              --generate-notes \
+              out/infrastructure-components.yaml \
+              out/metadata.yaml \
+              out/cluster-template.yaml \
+              out/cluster-template-with-identity.yaml

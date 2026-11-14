@@ -40,7 +40,7 @@ func (ym *YandexMachine) SetupWebhookWithManager(mgr ctrl.Manager) error {
 }
 
 //nolint:lll // controller-gen marker
-//+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachine,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachines,verbs=create;update,versions=v1alpha1,name=validation.yandexmachines.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1beta1
+//+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-yandexmachine,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=yandexmachines,verbs=create;update,versions=v1alpha1,name=validation.yandexmachines.infrastructure.cluster.x-k8s.io,admissionReviewVersions=v1
 
 // YandexMachineValidator implements a validating webhook for YandexMachine.
 type YandexMachineValidator struct{}
