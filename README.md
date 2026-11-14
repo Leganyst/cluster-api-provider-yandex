@@ -101,7 +101,7 @@
 1. Склонируйте репозиторий `cluster-api-provider-yandex` и перейдите в директорию с проектом:
 
     ```bash
-    git clone https://github.com/Leganyst/cluster-api-provider-yandex.git
+    git clone https://github.com/k8s-pier/cluster-api-provider-yandex.git
     cd cluster-api-provider-yandex
     ```
 
@@ -141,7 +141,7 @@
 При создании тега выпуска образ этого форка публикуется в GitHub Container Registry (workflow `.github/workflows/release-push.yml`):
 
 ```text
-ghcr.io/leganyst/cluster-api-provider-yandex:<тег_выпуска>
+ghcr.io/k8s-pier/cluster-api-provider-yandex:<тег_выпуска>
 ```
 
 Путь к образу уже записан в файле `infrastructure-components.yaml` соответствующего выпуска, отдельно указывать его не нужно.
@@ -179,7 +179,7 @@ ghcr.io/leganyst/cluster-api-provider-yandex:<тег_выпуска>
         ```yaml
         providers:
           - name: "yandex"
-            url: "https://github.com/Leganyst/cluster-api-provider-yandex/releases/latest/infrastructure-components.yaml"
+            url: "https://github.com/k8s-pier/cluster-api-provider-yandex/releases/latest/infrastructure-components.yaml"
             type: "InfrastructureProvider"
         ```
 

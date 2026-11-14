@@ -1,7 +1,7 @@
 # Заметки об обновлении CAPY до Cluster API v1.14
 
 Этот документ описывает, что и зачем было изменено в форке
-`Leganyst/cluster-api-provider-yandex` при переходе с Cluster API v1.6 на v1.14
+`k8s-pier/cluster-api-provider-yandex` при переходе с Cluster API v1.6 на v1.14
 и с контракта провайдеров v1beta1 на v1beta2. Он написан для человека, который
 сам обновление не делал.
 
@@ -494,7 +494,7 @@ kubectl apply --dry-run=server -f cluster.yaml
 **`Makefile`:**
 
 - Путь образа задаётся переменными `REGISTRY` (по умолчанию
-  `ghcr.io/leganyst`), `IMAGE_NAME`, `TAG`; итоговое значение — `IMG`, его
+  `ghcr.io/k8s-pier`), `IMAGE_NAME`, `TAG`; итоговое значение — `IMG`, его
   по-прежнему можно задать целиком.
 - Новая цель `make release` собирает в каталог `out/` (переменная
   `RELEASE_DIR`) артефакты выпуска: `infrastructure-components.yaml`,
@@ -876,8 +876,8 @@ grep -n "contract" metadata.yaml
 kind create cluster --name capy-mgmt
 
 make release TAG=v0.3.0
-docker build -t ghcr.io/leganyst/cluster-api-provider-yandex:v0.3.0 .
-kind load docker-image ghcr.io/leganyst/cluster-api-provider-yandex:v0.3.0 --name capy-mgmt
+docker build -t ghcr.io/k8s-pier/cluster-api-provider-yandex:v0.3.0 .
+kind load docker-image ghcr.io/k8s-pier/cluster-api-provider-yandex:v0.3.0 --name capy-mgmt
 
 mkdir -p ~/capy-repo/infrastructure-yandex/v0.3.0
 cp out/* ~/capy-repo/infrastructure-yandex/v0.3.0/
