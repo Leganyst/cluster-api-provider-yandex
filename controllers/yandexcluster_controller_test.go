@@ -27,12 +27,12 @@ import (
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/options"
 	"go.uber.org/mock/gomock"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	alb "github.com/yandex-cloud/go-genproto/yandex/cloud/apploadbalancer/v1"
-	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -147,7 +147,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 
 		It("should not reconcile an YandexCluster with paused CAPI Cluster", func() {
@@ -165,7 +165,18 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			result, err := reconciler.Reconcile(ctx, e.getReconcileRequest(yc.Namespace, yc.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			Expect(result.Requeue).To(BeFalse())
+
+			// v1beta2 contract: the paused state is surfaced in the Paused condition,
+			// and a paused YandexCluster is not touched otherwise (no finalizer, no cloud calls).
+			yc = &infrav1.YandexCluster{}
+			Eventually(func() bool {
+				key := client.ObjectKey{Name: e.clusterName, Namespace: testNamespace.Name}
+				err := e.Get(ctx, key, yc)
+				return err == nil && conditions.IsTrue(yc, infrav1.PausedCondition)
+			}, e.reconcileTimeout).Should(BeTrue())
+			Expect(yc.GetFinalizers()).To(BeEmpty())
+			Expect(yc.Status.Initialization.Provisioned).To(BeNil())
+			Expect(conditions.Has(yc, infrav1.ReadyCondition)).To(BeFalse())
 		})
 
 		It("should add finalizer to the YandexCluster and requeue", func() {
@@ -182,7 +193,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 
 			result, err := reconciler.Reconcile(ctx, e.getReconcileRequest(yc.Namespace, yc.Name))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			yc = &infrav1.YandexCluster{}
 			Eventually(func() bool {
@@ -211,7 +222,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			req := e.getReconcileRequest(yc.Namespace, yc.Name)
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			ip := "1.2.3.4"
 			e.setNewALBReconcileMocks(ip)
@@ -225,7 +236,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 					Namespace: testNamespace.Name,
 				}
 				err := e.Get(ctx, key, yc)
-				return (err == nil && yc.Status.Ready)
+				return (err == nil && clusterReady(yc))
 			}, e.eventuallyTimeout).Should(BeTrue())
 
 			Expect(yc.Spec.ControlPlaneEndpoint.Host).To(Equal(ip))
@@ -253,7 +264,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			req := e.getReconcileRequest(yc.Namespace, yc.Name)
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			e.setNewALBReconcileMocks("")
 			result, err = reconciler.Reconcile(ctx, req)
@@ -266,7 +277,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 					Namespace: testNamespace.Name,
 				}
 				err := e.Get(ctx, key, yc)
-				return (err == nil && yc.Status.Ready)
+				return (err == nil && clusterReady(yc))
 			}, e.eventuallyTimeout).Should(BeTrue())
 
 			Expect(yc.Spec.ControlPlaneEndpoint.Host).To(Equal(ip))
@@ -291,7 +302,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			// reconciler sets finalizer here.
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			ip := "1.2.3.4"
 			e.setExistingALBReconcileMocks(ip)
@@ -305,7 +316,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 					Namespace: testNamespace.Name,
 				}
 				err := e.Get(ctx, key, yc)
-				return (err == nil && yc.Status.Ready)
+				return (err == nil && clusterReady(yc))
 			}, e.eventuallyTimeout).Should(BeTrue())
 
 			Expect(yc.Spec.ControlPlaneEndpoint.Host).To(Equal(ip))
@@ -331,7 +342,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			// reconciler sets finalizer here.
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			existLoadBalancerIP := "1.2.3.4"
 			mockID, mockName := "123", "alb"
@@ -398,7 +409,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 
 		It("should error if controlplaneendpoint is set and load balancer listener address doesn't exist", func() {
@@ -406,7 +417,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			Expect(e.Create(ctx, cc)).To(Succeed())
 			yc := e.getYandexClusterWithOwnerReference(testNamespace.Name)
 			controlPlaneEndpointIP := "1.1.1.1"
-			yc.Spec.ControlPlaneEndpoint = clusterv1beta1.APIEndpoint{
+			yc.Spec.ControlPlaneEndpoint = infrav1.APIEndpoint{
 				Host: controlPlaneEndpointIP,
 				Port: 8443,
 			}
@@ -422,7 +433,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			// reconciler sets finalizer here.
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			// mocks
 			mockID := "123"
@@ -471,7 +482,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 
 		It("should not change controlplaneendpoint when it exist and load balancer listener address exists", func() {
@@ -480,7 +491,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			yc := e.getYandexClusterWithOwnerReference(testNamespace.Name)
 			controlPlaneEndpointIP := "1.2.3.4"
 			ip := "1.2.3.4"
-			yc.Spec.ControlPlaneEndpoint = clusterv1beta1.APIEndpoint{
+			yc.Spec.ControlPlaneEndpoint = infrav1.APIEndpoint{
 				Host: controlPlaneEndpointIP,
 				Port: 8443,
 			}
@@ -497,7 +508,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			// reconciler sets finalizer here.
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			// mock should return ip address from cluster load balancer spec
 			e.setNewALBReconcileMocks("")
@@ -511,7 +522,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 					Namespace: testNamespace.Name,
 				}
 				err := e.Get(ctx, key, yc)
-				return (err == nil && yc.Status.Ready)
+				return (err == nil && clusterReady(yc))
 			}, e.eventuallyTimeout).Should(BeTrue())
 
 			Expect(yc.Spec.ControlPlaneEndpoint.Host).To(Equal(controlPlaneEndpointIP))
@@ -539,23 +550,23 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			req := e.getReconcileRequest(yc.Namespace, yc.Name)
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			e.setNewTargetGroupErrorMocks()
 			// got a target group get error.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			// got a target group create error.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			// got a backend group get error.
 			// We call mock with an error only to exit from the Reconcile().
 			// This allows us not to prepare mock calls for the full cycle of creating ALB
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 
 		It("should error and retry to create ALB backend group on api error", func() {
@@ -574,23 +585,23 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			req := e.getReconcileRequest(yc.Namespace, yc.Name)
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			e.setNewBackendGroupErrorMocks()
 			// got a backend group get error.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			// got a backend group create error.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			// got an alb get error.
 			// We call mock with an error only to exit from the Reconcile().
 			// This allows us not to prepare mock calls for the full cycle of creating ALB
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 
 		It("should error and retry to create ALB on api error", func() {
@@ -609,18 +620,18 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 			req := e.getReconcileRequest(yc.Namespace, yc.Name)
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.IsZero()).To(BeTrue(), "adding the finalizer must not schedule an explicit requeue")
 
 			ip := "1.2.3.4"
 			e.setNewALBErrorMocks(ip)
 			// got an ALB get error.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			// got an ALB create error.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			// ALB created.
 			result, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -632,7 +643,7 @@ var _ = Describe("YandexCluster reconciliation check", func() {
 					Namespace: testNamespace.Name,
 				}
 				err := e.Get(ctx, key, yc)
-				return (err == nil && yc.Status.Ready)
+				return (err == nil && clusterReady(yc))
 			}, e.eventuallyTimeout).Should(BeTrue())
 
 			Expect(yc.Spec.ControlPlaneEndpoint.Host).To(Equal(ip))
@@ -696,7 +707,7 @@ var _ = Describe("YandexCluster deletion check", func() {
 
 			result, err := reconciler.reconcileDelete(ctx, clusterScope)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			Expect(clusterScope.Close(ctx)).Error().NotTo(HaveOccurred())
 
 			// Check that the YandexCluster still exists after reconciliation.
@@ -734,7 +745,7 @@ var _ = Describe("YandexCluster deletion check", func() {
 			result, err := reconciler.reconcileDelete(ctx, clusterScope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(controllerutil.ContainsFinalizer(clusterScope.YandexCluster, infrav1.ClusterFinalizer)).To(BeFalse())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			Expect(clusterScope.Close(ctx)).Error().NotTo(HaveOccurred())
 		})
 
@@ -792,7 +803,7 @@ var _ = Describe("YandexCluster deletion check", func() {
 			result, err = reconciler.reconcileDelete(ctx, clusterScope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(controllerutil.ContainsFinalizer(clusterScope.YandexCluster, infrav1.ClusterFinalizer)).To(BeFalse())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 			Expect(clusterScope.Close(ctx)).Error().NotTo(HaveOccurred())
 		})
 	})

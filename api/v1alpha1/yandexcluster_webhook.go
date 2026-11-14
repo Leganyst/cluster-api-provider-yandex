@@ -24,7 +24,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -78,7 +77,7 @@ func (*YandexClusterValidator) ValidateCreate(_ context.Context, c *YandexCluste
 		)
 	}
 
-	if !reflect.DeepEqual(c.Spec.ControlPlaneEndpoint, clusterv1.APIEndpoint{}) {
+	if !reflect.DeepEqual(c.Spec.ControlPlaneEndpoint, APIEndpoint{}) {
 		allErrs = append(allErrs, isControlPlaneEndpointValid(c.Spec.ControlPlaneEndpoint)...)
 	}
 
@@ -103,7 +102,7 @@ func (*YandexClusterValidator) ValidateUpdate(_ context.Context, old, c *YandexC
 	// We allow you to change the ControlPlaneEndpoint only if this field has not been set before.
 	// In all other cases, this field is immutable.
 	if !reflect.DeepEqual(c.Spec.ControlPlaneEndpoint, old.Spec.ControlPlaneEndpoint) {
-		if reflect.DeepEqual(old.Spec.ControlPlaneEndpoint, clusterv1.APIEndpoint{}) {
+		if reflect.DeepEqual(old.Spec.ControlPlaneEndpoint, APIEndpoint{}) {
 			allErrs = append(allErrs, isControlPlaneEndpointValid(c.Spec.ControlPlaneEndpoint)...)
 		} else {
 			allErrs = append(allErrs,
@@ -155,7 +154,7 @@ func isIPv4orFQDN(s string) bool {
 }
 
 // isControlPlaneEndpointValid checks if ControlPlaneEndpoint has valid fields
-func isControlPlaneEndpointValid(cp clusterv1.APIEndpoint) field.ErrorList {
+func isControlPlaneEndpointValid(cp APIEndpoint) field.ErrorList {
 	var errs field.ErrorList
 	if cp.Host == "" || cp.Port == 0 {
 		errs = append(errs,

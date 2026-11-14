@@ -21,8 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/api/resource"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
-	"sigs.k8s.io/cluster-api/api/deprecated/errors"
 )
 
 const (
@@ -35,8 +33,12 @@ const (
 
 // YandexMachineSpec defines the desired state of YandexMachine.
 type YandexMachineSpec struct {
-	// ProviderID is the unique identifier as specified by the cloud provider.
-	ProviderID *string `json:"providerID,omitempty"`
+	// providerID must match the provider ID as seen on the node object corresponding to this machine.
+	// It has the format yandex://<instance-id> and is set by the provider once the instance is created.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	ProviderID string `json:"providerID,omitempty"`
 
 	// ZoneID is the identifier of YandexCloud availability zone.
 	// +optional
@@ -116,9 +118,18 @@ type Disk struct {
 
 // YandexMachineStatus defines the observed state of YandexMachine.
 type YandexMachineStatus struct {
-	// Ready is true when the provider resource is ready.
+	// conditions represents the observations of a YandexMachine's current state.
+	// Known condition types are Ready, InstanceReady and Paused.
 	// +optional
-	Ready bool `json:"ready"`
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=32
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// initialization provides observations of the YandexMachine initialization process.
+	// NOTE: Fields in this struct are part of the Cluster API contract and are used to orchestrate initial Machine provisioning.
+	// +optional
+	Initialization YandexMachineInitializationStatus `json:"initialization,omitempty,omitzero"`
 
 	// Addresses contains the YandexCloud instance associated addresses.
 	// +optional
@@ -127,52 +138,27 @@ type YandexMachineStatus struct {
 	// InstanceStatus is the status of the Yandex instance for this machine.
 	// +optional
 	InstanceStatus *InstanceStatus `json:"instanceState,omitempty"`
-
-	// FailureReason will be set in the event that there is a terminal problem
-	// reconciling the Machine and will contain a succinct value suitable
-	// for machine interpretation.
-	//
-	// This field should not be set for transitive errors that a controller
-	// faces that are expected to be fixed automatically over
-	// time (like service outages), but instead indicate that something is
-	// fundamentally wrong with the Machine's spec or the configuration of
-	// the controller, and that manual intervention is required. Examples
-	// of terminal errors would be invalid combinations of settings in the
-	// spec, values that are unsupported by the controller, or the
-	// responsible controller itself being critically misconfigured.
-	//
-	// Any transient errors that occur during the reconciliation of Machines
-	// can be added as events to the Machine object and/or logged in the
-	// controller's output.
-	// +optional
-	FailureReason *errors.MachineStatusError `json:"failureReason,omitempty"`
-
-	// FailureMessage will be set in the event that there is a terminal problem
-	// reconciling the Machine and will contain a more verbose string suitable
-	// for logging and human consumption.
-	//
-	// This field should not be set for transitive errors that a controller
-	// faces that are expected to be fixed automatically over
-	// time (like service outages), but instead indicate that something is
-	// fundamentally wrong with the Machine's spec or the configuration of
-	// the controller, and that manual intervention is required. Examples
-	// of terminal errors would be invalid combinations of settings in the
-	// spec, values that are unsupported by the controller, or the
-	// responsible controller itself being critically misconfigured.
-	//
-	// Any transient errors that occur during the reconciliation of Machines
-	// can be added as events to the Machine object and/or logged in the
-	// controller's output.
-	// +optional
-	FailureMessage *string `json:"failureMessage,omitempty"`
-
-	// Conditions defines current service state of the YandexMachine.
-	// +optional
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// YandexMachineInitializationStatus provides observations of the YandexMachine initialization process.
+// +kubebuilder:validation:MinProperties=1
+type YandexMachineInitializationStatus struct {
+	// provisioned is true when the infrastructure provider reports that the Machine's infrastructure is fully provisioned.
+	// NOTE: this field is part of the Cluster API contract, and it is used to orchestrate initial Machine provisioning.
+	// +optional
+	Provisioned *bool `json:"provisioned,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:path=yandexmachines,scope=Namespaced,categories=cluster-api
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels.cluster\\.x-k8s\\.io/cluster-name",description="Cluster to which this YandexMachine belongs"
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.instanceState",description="Yandex Compute instance state"
+// +kubebuilder:printcolumn:name="Provisioned",type="string",JSONPath=".status.initialization.provisioned",description="Machine infrastructure is provisioned"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Machine infrastructure is ready"
+// +kubebuilder:printcolumn:name="Paused",type="string",JSONPath=`.status.conditions[?(@.type=="Paused")].status`,description="Reconciliation paused",priority=10
+// +kubebuilder:printcolumn:name="Provider ID",type="string",JSONPath=".spec.providerID",description="Provider ID",priority=10
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Time duration since creation of YandexMachine"
 
 // YandexMachine is the Schema for the yandexmachines API.
 type YandexMachine struct {
@@ -192,13 +178,13 @@ type YandexMachineList struct {
 	Items           []YandexMachine `json:"items"`
 }
 
-// GetConditions returns the list of conditions for an Yandex Machine API object.
-func (ym *YandexMachine) GetConditions() clusterv1.Conditions {
+// GetConditions returns the set of conditions for this object.
+func (ym *YandexMachine) GetConditions() []metav1.Condition {
 	return ym.Status.Conditions
 }
 
-// SetConditions will set the given conditions on an Yandex Machine API object.
-func (ym *YandexMachine) SetConditions(conditions clusterv1.Conditions) {
+// SetConditions sets conditions for an API object.
+func (ym *YandexMachine) SetConditions(conditions []metav1.Condition) {
 	ym.Status.Conditions = conditions
 }
 

@@ -21,9 +21,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
-	v1beta1conditions "sigs.k8s.io/cluster-api/util/deprecated/v1beta1/conditions"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -96,87 +96,65 @@ func (r *YandexIdentityReconciler) reconcile(ctx context.Context, identityScope 
 	logger := log.FromContext(ctx)
 
 	if controllerutil.AddFinalizer(identityScope.Identity, infrav1.IdentityFinalizer) {
-		logger.Info("Finalizer added to YandexIdentity, requeueing")
-		return ctrl.Result{Requeue: true}, nil
+		// The finalizer is persisted by the deferred patch. That update triggers the next
+		// reconcile by itself, so an explicit requeue is not needed.
+		logger.Info("Finalizer added to YandexIdentity")
+		return ctrl.Result{}, nil
 	}
 
 	// Set status to ready if we return without error
 	defer func() {
 		if rerr == nil {
 			identityScope.Identity.Status.Ready = true
-			v1beta1conditions.MarkTrue(identityScope.Identity, infrav1.IdentityReadyCondition)
+			setIdentityCondition(identityScope.Identity, infrav1.IdentityReadyCondition, metav1.ConditionTrue, infrav1.IdentitySucceededReason, "")
 		} else {
 			identityScope.Identity.Status.Ready = false
-			v1beta1conditions.MarkFalse(identityScope.Identity,
-				infrav1.IdentityReadyCondition,
-				"ReconciliationError",
-				clusterv1beta1.ConditionSeverityError,
-				"%s",
-				rerr.Error())
+			setIdentityCondition(identityScope.Identity, infrav1.IdentityReadyCondition, metav1.ConditionFalse,
+				infrav1.IdentityReconciliationErrorReason, rerr.Error())
 		}
 	}()
 
 	secretChanged, err := identityScope.IsSecretChanged(ctx)
 	if err != nil {
-		v1beta1conditions.MarkFalse(identityScope.Identity,
-			infrav1.IdentityValidCondition,
-			"identity secret validation error",
-			clusterv1beta1.ConditionSeverityError,
-			"%s",
-			err.Error())
+		setIdentityCondition(identityScope.Identity, infrav1.IdentityValidCondition, metav1.ConditionFalse,
+			infrav1.IdentitySecretValidationFailedReason, err.Error())
 		return ctrl.Result{}, errors.Wrap(err, "failed to check identity key")
 	}
 
 	if secretChanged {
 		if err := identityScope.CheckConnectWithIdentity(ctx); err != nil {
-			v1beta1conditions.MarkFalse(identityScope.Identity,
-				infrav1.IdentityValidCondition,
-				"identity check error",
-				clusterv1beta1.ConditionSeverityError,
-				"%s",
-				err.Error())
+			setIdentityCondition(identityScope.Identity, infrav1.IdentityValidCondition, metav1.ConditionFalse,
+				infrav1.IdentityConnectionCheckFailedReason, err.Error())
 			return ctrl.Result{}, errors.Wrap(err, "failed to check connection with identity")
 		}
 
 		if err := identityScope.SetSecretHash(ctx); err != nil {
-			v1beta1conditions.MarkFalse(identityScope.Identity,
-				infrav1.IdentityValidCondition,
-				"identity key hash update error",
-				clusterv1beta1.ConditionSeverityError,
-				"%s",
-				err.Error())
+			setIdentityCondition(identityScope.Identity, infrav1.IdentityValidCondition, metav1.ConditionFalse,
+				infrav1.IdentityKeyHashUpdateFailedReason, err.Error())
 			return ctrl.Result{}, errors.Wrap(err, "failed to set key hash")
 		}
 	}
 
 	// set IdentityValidCondition to true
-	v1beta1conditions.MarkTrue(identityScope.Identity, infrav1.IdentityValidCondition)
+	setIdentityCondition(identityScope.Identity, infrav1.IdentityValidCondition, metav1.ConditionTrue, infrav1.IdentitySucceededReason, "")
 
 	if err := identityScope.SetSecretFinalizerAndOwner(ctx); err != nil {
-		v1beta1conditions.MarkFalse(identityScope.Identity,
-			infrav1.IdentitySecretUpdatedCondition,
-			"secret update error",
-			clusterv1beta1.ConditionSeverityError,
-			"%s",
-			err.Error())
+		setIdentityCondition(identityScope.Identity, infrav1.IdentitySecretUpdatedCondition, metav1.ConditionFalse,
+			infrav1.IdentitySecretUpdateFailedReason, err.Error())
 		return ctrl.Result{}, errors.Wrap(err, "failed to set secret finalizer")
 	}
 
 	// set IdentitySecretUpdatedCondition to true
-	v1beta1conditions.MarkTrue(identityScope.Identity, infrav1.IdentitySecretUpdatedCondition)
+	setIdentityCondition(identityScope.Identity, infrav1.IdentitySecretUpdatedCondition, metav1.ConditionTrue, infrav1.IdentitySucceededReason, "")
 
 	if err := identityScope.UpdateLinkedClusters(ctx); err != nil {
-		v1beta1conditions.MarkFalse(identityScope.Identity,
-			infrav1.IdentityLinkedClustersUpdatedCondition,
-			"linked clusters update error",
-			clusterv1beta1.ConditionSeverityError,
-			"%s",
-			err.Error())
+		setIdentityCondition(identityScope.Identity, infrav1.IdentityLinkedClustersUpdatedCondition, metav1.ConditionFalse,
+			infrav1.IdentityLinkedClustersUpdateFailedReason, err.Error())
 		return ctrl.Result{}, errors.Wrap(err, "failed to update linked clusters")
 	}
 
 	// set IdentityLinkedClustersUpdatedCondition to true
-	v1beta1conditions.MarkTrue(identityScope.Identity, infrav1.IdentityLinkedClustersUpdatedCondition)
+	setIdentityCondition(identityScope.Identity, infrav1.IdentityLinkedClustersUpdatedCondition, metav1.ConditionTrue, infrav1.IdentitySucceededReason, "")
 
 	return ctrl.Result{}, nil
 }
@@ -197,6 +175,16 @@ func (r *YandexIdentityReconciler) reconcileDelete(ctx context.Context, identity
 	controllerutil.RemoveFinalizer(identityScope.Identity, infrav1.IdentityFinalizer)
 
 	return ctrl.Result{}, nil
+}
+
+// setIdentityCondition sets a condition of the YandexIdentity.
+func setIdentityCondition(identity *infrav1.YandexIdentity, conditionType string, status metav1.ConditionStatus, reason, message string) {
+	conditions.Set(identity, metav1.Condition{
+		Type:    conditionType,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

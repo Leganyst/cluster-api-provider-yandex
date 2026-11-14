@@ -18,7 +18,6 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 )
 
 const (
@@ -51,9 +50,13 @@ type YandexIdentityStatus struct {
 	// +optional
 	KeyHash string `json:"keyhash,omitempty"`
 
-	// Conditions is a list of conditions and their status.
+	// conditions represents the observations of a YandexIdentity's current state.
+	// Known condition types are IdentityReady, IdentityValid, IdentitySecretUpdated and IdentityLinkedClustersUpdated.
 	// +optional
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=32
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// Linked clusters
 	// +optional
@@ -86,13 +89,13 @@ func (i *YandexIdentity) GenerateSecretFinalizer() string {
 	return i.Name + "/" + IdentityFinalizer
 }
 
-// GetConditions returns the list of conditions for an YandexIdentity API object.
-func (i *YandexIdentity) GetConditions() clusterv1.Conditions {
+// GetConditions returns the set of conditions for this object.
+func (i *YandexIdentity) GetConditions() []metav1.Condition {
 	return i.Status.Conditions
 }
 
-// SetConditions will set the given conditions on an YandexIdentity API object.
-func (i *YandexIdentity) SetConditions(conditions clusterv1.Conditions) {
+// SetConditions sets conditions for an API object.
+func (i *YandexIdentity) SetConditions(conditions []metav1.Condition) {
 	i.Status.Conditions = conditions
 }
 

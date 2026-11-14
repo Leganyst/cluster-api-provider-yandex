@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -83,7 +84,6 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 			result, err := reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			Expect(result.Requeue).To(BeFalse())
 		})
 
 		It("should not reconcile YandexMachine without parent YandexCluster", func() {
@@ -99,7 +99,6 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 			result, err := reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			Expect(result.Requeue).To(BeFalse())
 		})
 
 		It("should not reconcile YandexMachine with paused CAPI Cluster", func() {
@@ -118,7 +117,18 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 			result, err := reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			Expect(result.Requeue).To(BeFalse())
+
+			// v1beta2 contract: the paused state is surfaced in the Paused condition,
+			// and a paused YandexMachine is not touched otherwise (no finalizer, no cloud calls).
+			ym = &infrav1.YandexMachine{}
+			Eventually(func() bool {
+				key := client.ObjectKey{Name: e.machineName, Namespace: testNamespace.Name}
+				err := e.Get(ctx, key, ym)
+				return err == nil && conditions.IsTrue(ym, infrav1.PausedCondition)
+			}, e.reconcileTimeout).Should(BeTrue())
+			Expect(ym.GetFinalizers()).To(BeEmpty())
+			Expect(ym.Spec.ProviderID).To(BeEmpty())
+			expectMachineNotProvisioned(ym)
 		})
 	})
 
@@ -153,7 +163,7 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				*ym.Status.InstanceStatus == infrav1.InstanceStatusStarting)
 		}, e.reconcileTimeout).Should(BeTrue())
 		Expect(result.RequeueAfter).To(Equal(RequeueDuration))
-		Expect(ym.Status.Ready).To(BeFalse())
+		expectMachineNotProvisioned(ym)
 		Expect(ym.GetFinalizers()).To(Equal([]string{infrav1.MachineFinalizer}))
 
 		result, err = reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
@@ -167,11 +177,72 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				Namespace: testNamespace.Name,
 			}
 			err := e.Get(ctx, key, ym)
-			return (err == nil && ym.Status.Ready == true)
+			return (err == nil && machineReady(ym))
 		}, e.reconcileTimeout).Should(BeTrue())
-		Expect(result.Requeue).To(BeFalse())
 		Expect(result.RequeueAfter).To(BeZero())
 		Expect(ym.Status.Addresses[0].Address).To(Equal(addr))
+
+		// v1beta2 contract fields.
+		Expect(ym.Status.Initialization.Provisioned).To(HaveValue(BeTrue()))
+		Expect(ym.Spec.ProviderID).To(Equal("yandex://123"))
+		Expect(conditions.IsFalse(ym, infrav1.PausedCondition)).To(BeTrue())
+		Expect(conditions.GetReason(ym, infrav1.InstanceReadyCondition)).To(Equal(infrav1.InstanceRunningReason))
+		Expect(conditions.GetReason(ym, infrav1.ReadyCondition)).To(Equal(infrav1.ReadyReason))
+	})
+
+	It("should neither restart nor recreate a stopped instance and become ready again when it runs", func() {
+		Expect(e.Create(ctx, e.getCAPIClusterWithInfrastructureReference(testNamespace.Name))).To(Succeed())
+		Expect(e.Create(ctx, e.getYandexClusterWithOwnerReference(testNamespace.Name))).To(Succeed())
+		Expect(e.Create(ctx, e.getMachineWithInfrastructureRef(testNamespace.Name))).To(Succeed())
+		Expect(e.Create(ctx, e.getBootstrapSecret(testNamespace.Name))).To(Succeed())
+		ym := e.getYandexMachineWithOwnerRef(testNamespace.Name)
+		Expect(e.Create(ctx, ym)).To(Succeed())
+
+		reconciler := &YandexMachineReconciler{
+			Client:             k8sClient,
+			YandexClientGetter: e.mockClientGetter,
+		}
+
+		// The mock is strict: exactly one ComputeCreate and no ComputeDelete are allowed, so any
+		// attempt to recreate or delete the stopped instance fails the test.
+		addr := "1.2.3.4"
+		e.setStoppedAndStartedYandexMachineReconcileMocks(addr)
+		get := func() *infrav1.YandexMachine {
+			GinkgoHelper()
+			obj := &infrav1.YandexMachine{}
+			Expect(e.Get(ctx, client.ObjectKey{Name: e.machineName, Namespace: testNamespace.Name}, obj)).To(Succeed())
+			return obj
+		}
+
+		// 1. The instance is created and running: the machine is provisioned and ready.
+		result, err := reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		Eventually(func() bool { return machineReady(get()) }, e.reconcileTimeout).Should(BeTrue())
+		providerID := get().Spec.ProviderID
+		Expect(providerID).ToNot(BeEmpty())
+
+		// 2. The instance is stopped in the cloud: the state is only reported.
+		result, err = reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(RequeueDuration))
+		Eventually(func() bool {
+			return conditions.IsFalse(get(), infrav1.InstanceReadyCondition)
+		}, e.reconcileTimeout).Should(BeTrue())
+		ym = get()
+		Expect(*ym.Status.InstanceStatus).To(Equal(infrav1.InstanceStatusStopped))
+		Expect(conditions.GetReason(ym, infrav1.InstanceReadyCondition)).To(Equal(infrav1.InstanceNotRunningReason))
+		Expect(conditions.IsFalse(ym, infrav1.ReadyCondition)).To(BeTrue())
+		// Initial provisioning has been completed and stays completed, the instance is the same.
+		Expect(ym.Status.Initialization.Provisioned).To(HaveValue(BeTrue()))
+		Expect(ym.Spec.ProviderID).To(Equal(providerID))
+
+		// 3. The instance is started again: the machine becomes ready without being recreated.
+		result, err = reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		Eventually(func() bool { return machineReady(get()) }, e.reconcileTimeout).Should(BeTrue())
+		Expect(get().Spec.ProviderID).To(Equal(providerID))
 	})
 
 	It("should not error and add controlplane node to application load balancer in cluster with ALB", func() {
@@ -200,10 +271,9 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				Namespace: testNamespace.Name,
 			}
 			err := e.Get(ctx, key, ym)
-			return (err == nil && ym.Status.Ready == true)
+			return (err == nil && machineReady(ym))
 		}, e.reconcileTimeout).Should(BeTrue())
 
-		Expect(result.Requeue).To(BeFalse())
 		Expect(result.RequeueAfter).To(BeZero())
 		Expect(ym.Status.Addresses[0].Address).To(Equal(addr))
 	})
@@ -234,11 +304,11 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 			}
 			err = e.Get(ctx, key, ym)
 			return (err == nil &&
-				ym.Status.Conditions != nil &&
-				ym.Status.Conditions[0].Reason == infrav1.ConditionStatusNotfound)
+				conditions.IsFalse(ym, infrav1.InstanceReadyCondition) &&
+				conditions.GetReason(ym, infrav1.InstanceReadyCondition) == infrav1.InstanceCreateFailedReason)
 		}, e.reconcileTimeout).Should(BeTrue())
-		Expect(ym.Spec.ProviderID).To(BeNil())
-		Expect(ym.Status.Ready).To(BeFalse())
+		Expect(ym.Spec.ProviderID).To(BeEmpty())
+		expectMachineNotProvisioned(ym)
 
 		// Machine creation API call ok,  YandexMachine have to be in STARTING status.
 		result, err = reconciler.Reconcile(ctx, e.getReconcileRequest(ym.Namespace, ym.Name))
@@ -255,7 +325,7 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				ym.Status.InstanceStatus != nil &&
 				*ym.Status.InstanceStatus == infrav1.InstanceStatusStarting)
 		}, e.reconcileTimeout).Should(BeTrue())
-		Expect(ym.Status.Ready).To(BeFalse())
+		expectMachineNotProvisioned(ym)
 		Expect(ym.GetFinalizers()).To(Equal([]string{infrav1.MachineFinalizer}))
 	})
 
@@ -287,9 +357,10 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 			err = e.Get(ctx, key, ym)
 
 			return (err == nil &&
-				ym.Status.Conditions == nil)
+				conditions.IsFalse(ym, infrav1.InstanceReadyCondition) &&
+				conditions.GetReason(ym, infrav1.InstanceReadyCondition) == infrav1.InstanceReconcileFailedReason)
 		}, e.reconcileTimeout).Should(BeTrue())
-		Expect(ym.Status.Ready).To(BeFalse())
+		expectMachineNotProvisioned(ym)
 	})
 
 	It("should fail machine creation when yandex cloud instance was deleted by someone else", func() {
@@ -321,8 +392,18 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				ym.Status.InstanceStatus != nil &&
 				*ym.Status.InstanceStatus == infrav1.InstanceStatusDeleted)
 		}, e.reconcileTimeout).Should(BeTrue())
-		Expect(ym.Status.FailureReason).ToNot(BeNil())
-		Expect(ym.Status.FailureMessage).ToNot(BeNil())
+		Eventually(func() bool {
+			key := client.ObjectKey{
+				Name:      e.machineName,
+				Namespace: testNamespace.Name,
+			}
+			err = e.Get(ctx, key, ym)
+			return err == nil && conditions.IsFalse(ym, infrav1.ReadyCondition)
+		}, e.reconcileTimeout).Should(BeTrue())
+		Expect(conditions.IsFalse(ym, infrav1.InstanceReadyCondition)).To(BeTrue())
+		Expect(conditions.GetReason(ym, infrav1.InstanceReadyCondition)).To(Equal(infrav1.InstanceNotFoundReason))
+		Expect(conditions.GetMessage(ym, infrav1.InstanceReadyCondition)).ToNot(BeEmpty())
+		expectMachineNotProvisioned(ym)
 	})
 
 	It("should error and retry to add node to ALB target group on load balancer api error", func() {
@@ -352,10 +433,9 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				Namespace: testNamespace.Name,
 			}
 			err = e.Get(ctx, key, ym)
-			return (err == nil && ym.Status.Ready == false)
+			return (err == nil && !machineReady(ym))
 		}, e.reconcileTimeout).Should(BeTrue())
 
-		Expect(result.Requeue).To(BeFalse())
 		Expect(result.RequeueAfter).To(BeZero())
 		Expect(ym.Status.Addresses[0].Address).To(Equal(addr))
 
@@ -370,10 +450,9 @@ var _ = Describe("YandexMachine reconciliation check", func() {
 				Namespace: testNamespace.Name,
 			}
 			err := e.Get(ctx, key, ym)
-			return (err == nil && ym.Status.Ready == true)
+			return (err == nil && machineReady(ym))
 		}, e.reconcileTimeout).Should(BeTrue())
 
-		Expect(result.Requeue).To(BeFalse())
 		Expect(result.RequeueAfter).To(BeZero())
 		Expect(ym.Status.Addresses[0].Address).To(Equal(addr))
 	})
@@ -437,7 +516,6 @@ var _ = Describe("YandexMachine deletions checks", func() {
 
 			result, err := reconciler.reconcileDelete(ctx, machineScope)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
 			Expect(result.RequeueAfter).To(BeZero())
 		})
 	})
@@ -476,7 +554,6 @@ var _ = Describe("YandexMachine deletions checks", func() {
 		e.mockClient.EXPECT().ComputeGet(gomock.Any(), id).Return(nil, notFoundError)
 		result, err := reconciler.reconcileDelete(ctx, machineScope)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.Requeue).To(BeFalse())
 		Expect(result.RequeueAfter).To(BeZero())
 	})
 

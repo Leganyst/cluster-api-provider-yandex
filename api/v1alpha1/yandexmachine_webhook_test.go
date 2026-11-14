@@ -42,13 +42,13 @@ func TestYandexMachine_ValidateUpdate(t *testing.T) {
 			oldMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: nil,
+					ProviderID: "",
 				},
 			},
 			newMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: ptr.To("yandex://instance-id"),
+					ProviderID: "yandex://instance-id",
 				},
 			},
 			wantErr: false,
@@ -58,14 +58,14 @@ func TestYandexMachine_ValidateUpdate(t *testing.T) {
 			oldMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: nil,
+					ProviderID: "",
 					ZoneID:     ptr.To("ru-central1-a"),
 				},
 			},
 			newMachine: &infrav1.YandexMachine{
 				ObjectMeta: v1.ObjectMeta{Name: "ym-test"},
 				Spec: infrav1.YandexMachineSpec{
-					ProviderID: ptr.To("yandex://instance-id"),
+					ProviderID: "yandex://instance-id",
 					ZoneID:     ptr.To("ru-central1-b"),
 				},
 			},

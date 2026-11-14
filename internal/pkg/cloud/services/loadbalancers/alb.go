@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	alb "github.com/yandex-cloud/go-genproto/yandex/cloud/apploadbalancer/v1"
-	v1beta1conditions "sigs.k8s.io/cluster-api/util/deprecated/v1beta1/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
@@ -260,7 +259,6 @@ func (s *Service) reconcileALB(ctx context.Context, backendGroupID string) error
 			return err
 		}
 		logger.Info("application loadbalancer created", "instance id", id)
-		v1beta1conditions.MarkTrue(s.scope.YandexCluster, infrav1.ConditionStatusReady)
 		return nil
 	}
 

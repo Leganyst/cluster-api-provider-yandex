@@ -9,8 +9,8 @@ import (
 	"github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/cloud/ycerrors"
 	yandex_compute "github.com/yandex-cloud/go-genproto/yandex/cloud/compute/v1"
 	corev1 "k8s.io/api/core/v1"
-	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
-	v1beta1conditions "sigs.k8s.io/cluster-api/util/deprecated/v1beta1/conditions"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -18,6 +18,16 @@ const (
 	instanceDeleted    bool = true
 	instanceNotDeleted bool = false
 )
+
+// setInstanceCondition sets the InstanceReady condition of the YandexMachine.
+func (s *Service) setInstanceCondition(status metav1.ConditionStatus, reason, message string) {
+	conditions.Set(s.scope.YandexMachine, metav1.Condition{
+		Type:    infrav1.InstanceReadyCondition,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
+}
 
 // Reconcile reconciles compute instance.
 func (s *Service) Reconcile(ctx context.Context) error {
@@ -31,8 +41,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	if instanceID == "" {
 		newInstanceID, err := s.createComputeInstance(ctx, client)
 		if err != nil {
-			v1beta1conditions.MarkFalse(s.scope.YandexMachine,
-				infrav1.ConditionStatusRunning, infrav1.ConditionStatusNotfound, clusterv1beta1.ConditionSeverityError, "%s", err.Error())
+			s.setInstanceCondition(metav1.ConditionFalse, infrav1.InstanceCreateFailedReason, ycerrors.Message(err))
 			return err
 		}
 
@@ -46,54 +55,46 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		if ycerrors.IsNotFound(err) {
 			logger.Info("unable to find compute instance in yandex cloud")
 			s.scope.SetInstanceStatus(infrav1.InstanceStatusDeleted)
-			v1beta1conditions.MarkTrue(s.scope.YandexMachine, infrav1.ConditionStatusNotfound)
-			v1beta1conditions.MarkFalse(s.scope.YandexMachine,
-				infrav1.ConditionStatusProvisioning,
-				infrav1.ConditionStatusError,
-				clusterv1beta1.ConditionSeverityError,
-				"%s", err.Error())
-			v1beta1conditions.MarkFalse(s.scope.YandexMachine,
-				infrav1.ConditionStatusRunning,
-				infrav1.ConditionStatusError,
-				clusterv1beta1.ConditionSeverityError,
-				"%s", err.Error())
+			s.setInstanceCondition(metav1.ConditionFalse, infrav1.InstanceNotFoundReason, ycerrors.Message(err))
 			return nil
 		}
-		v1beta1conditions.MarkUnknown(s.scope.YandexMachine,
-			infrav1.ConditionStatusProvisioning,
-			infrav1.ConditionStatusNotfound,
-			"%s", err.Error())
-		v1beta1conditions.MarkUnknown(s.scope.YandexMachine,
-			infrav1.ConditionStatusRunning,
-			infrav1.ConditionStatusNotfound,
-			"%s", err.Error())
+
+		s.setInstanceCondition(metav1.ConditionUnknown, infrav1.InstanceReconcileFailedReason, ycerrors.Message(err))
 		return fmt.Errorf("unable to find compute instance %v: %w", s.scope.GetInstanceID(), err)
 	}
 
 	instanceState := infrav1.InstanceStatus(vm.GetStatus().String())
-	if instanceState == infrav1.InstanceStatusRunning {
+	switch instanceState {
+	case infrav1.InstanceStatusRunning:
 		instanceAddress, err := s.getInstanceAddress(vm)
 		if err != nil {
-			v1beta1conditions.MarkFalse(s.scope.YandexMachine,
-				infrav1.ConditionStatusRunning,
-				infrav1.ConditionStatusError,
-				clusterv1beta1.ConditionSeverityError,
-				"%s", err.Error())
+			s.setInstanceCondition(metav1.ConditionFalse, infrav1.InstanceReconcileFailedReason, err.Error())
 			return err
 		}
 
 		s.scope.SetAddresses(instanceAddress)
-
 		if s.scope.IsControlPlane() {
 			logger.V(1).Info("registering controlplane compute instance in load balancer")
 			if err := s.registerControlPlane(ctx); err != nil {
+				s.setInstanceCondition(metav1.ConditionFalse, infrav1.InstanceReconcileFailedReason,
+					fmt.Sprintf("failed to register the instance in the control plane load balancer: %s", ycerrors.Message(err)))
 				return fmt.Errorf("failed to register controlplane compute instance in load balancer: %w", err)
 			}
 		}
-		v1beta1conditions.MarkTrue(s.scope.YandexMachine, infrav1.ConditionStatusRunning)
+
+		s.setInstanceCondition(metav1.ConditionTrue, infrav1.InstanceRunningReason, "")
+	case infrav1.InstanceStatusProvisioning, infrav1.InstanceStatusStarting:
+		s.setInstanceCondition(metav1.ConditionFalse, infrav1.InstanceProvisioningReason,
+			fmt.Sprintf("Instance is in the %s state", instanceState))
+	default:
+		// The instance exists but does not run (for example it was stopped by the user).
+		// The provider intentionally does not restart or recreate it, it only reports the state.
+		s.setInstanceCondition(metav1.ConditionFalse, infrav1.InstanceNotRunningReason,
+			fmt.Sprintf("Instance is in the %s state", instanceState))
 	}
 
-	s.scope.SetInstanceStatus(infrav1.InstanceStatus(vm.GetStatus().String()))
+	s.scope.SetInstanceStatus(instanceState)
+
 	return nil
 }
 

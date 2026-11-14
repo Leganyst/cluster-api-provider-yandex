@@ -10,9 +10,10 @@ import (
 	infrav1 "github.com/yandex-cloud/cluster-api-provider-yandex/api/v1alpha1"
 	yandex "github.com/yandex-cloud/cluster-api-provider-yandex/internal/pkg/client"
 
-	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	v1beta1patch "sigs.k8s.io/cluster-api/util/deprecated/v1beta1/patch"
+	"sigs.k8s.io/cluster-api/util/conditions"
+	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -52,7 +53,7 @@ func NewClusterScope(ctx context.Context, params ClusterScopeParams) (*ClusterSc
 		return nil, err
 	}
 
-	helper, err := v1beta1patch.NewHelper(params.YandexCluster, params.Client)
+	helper, err := patch.NewHelper(params.YandexCluster, params.Client)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to init patch helper")
 	}
@@ -69,7 +70,7 @@ func NewClusterScope(ctx context.Context, params ClusterScopeParams) (*ClusterSc
 // ClusterScope defines the basic context for an actuator to operate upon.
 type ClusterScope struct {
 	client      client.Client
-	patchHelper *v1beta1patch.Helper
+	patchHelper *patch.Helper
 
 	Cluster       *clusterv1.Cluster
 	YandexCluster *infrav1.YandexCluster
@@ -78,7 +79,27 @@ type ClusterScope struct {
 
 // PatchObject persists the cluster configuration and status.
 func (c *ClusterScope) PatchObject(ctx context.Context) error {
-	return c.patchHelper.Patch(ctx, c.YandexCluster)
+	// Always update the Ready condition by summarizing the state of the other conditions.
+	if err := conditions.SetSummaryCondition(c.YandexCluster, c.YandexCluster, infrav1.ReadyCondition,
+		conditions.ForConditionTypes{infrav1.LoadBalancerReadyCondition},
+		conditions.CustomMergeStrategy{
+			MergeStrategy: conditions.DefaultMergeStrategy(
+				conditions.ComputeReasonFunc(conditions.GetDefaultComputeMergeReasonFunc(
+					infrav1.NotReadyReason,
+					infrav1.ReadyUnknownReason,
+					infrav1.ReadyReason,
+				)),
+			),
+		},
+	); err != nil {
+		return errors.Wrapf(err, "failed to set %s condition", infrav1.ReadyCondition)
+	}
+
+	// Patch the object, ignoring conflicts on the conditions owned by this controller.
+	return c.patchHelper.Patch(ctx, c.YandexCluster, patch.WithOwnedConditions{Conditions: []string{
+		infrav1.ReadyCondition,
+		infrav1.LoadBalancerReadyCondition,
+	}})
 }
 
 // Close closes the current scope persisting the cluster configuration and status.
@@ -97,9 +118,10 @@ func (c *ClusterScope) Name() string {
 	return c.Cluster.GetName()
 }
 
-// SetReady sets the YandexCluster Ready Status.
-func (c *ClusterScope) SetReady() {
-	c.YandexCluster.Status.Ready = true
+// SetProvisioned reports that the initial provisioning of the YandexCluster infrastructure is completed
+// (status.initialization.provisioned, v1beta2 contract).
+func (c *ClusterScope) SetProvisioned() {
+	c.YandexCluster.Status.Initialization.Provisioned = ptr.To(true)
 }
 
 // GetClient gets client for YandexCloud API.
@@ -128,7 +150,7 @@ func (c *ClusterScope) GetLabels() infrav1.Labels {
 }
 
 // ControlPlaneEndpoint gets the cluster API endpoit.
-func (c *ClusterScope) ControlPlaneEndpoint() clusterv1beta1.APIEndpoint {
+func (c *ClusterScope) ControlPlaneEndpoint() infrav1.APIEndpoint {
 	return c.YandexCluster.Spec.ControlPlaneEndpoint
 }
 

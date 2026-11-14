@@ -21,12 +21,6 @@ linters:
   # golangci-lint v2 applies no exclusion presets unless they are listed here,
   # so missing comments on exported symbols and packages are reported
   # (v1 needed "issues.include: EXC0012..EXC0015" for that).
-  exclusions:
-    rules:
-      # TEMPORARY (upgrade stage 1): the provider still implements the v1beta1 contract and therefore
-      # uses the deprecated v1beta1 packages and helpers. Stage 2 (v1beta2 contract) removes these rules.
-      - linters: [staticcheck]
-        text: 'SA1019: .*(v1beta1|api/deprecated/errors|Requeue is deprecated|ClusterUnpausedAndInfrastructureProvisioned)'
 formatters:
   enable:
     - gofmt

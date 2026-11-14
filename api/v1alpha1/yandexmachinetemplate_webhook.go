@@ -60,7 +60,7 @@ func (*YandexMachineTemplateValidator) ValidateCreate(_ context.Context, t *Yand
 	ymtlog.Info("validate create", "name", t.Name)
 	var allErrs field.ErrorList
 
-	if t.Spec.Template.Spec.ProviderID != nil {
+	if t.Spec.Template.Spec.ProviderID != "" {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "template", "spec", "providerID"), "cannot be set in templates"))
 	}
 

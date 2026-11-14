@@ -226,3 +226,165 @@ CRD переехали из `config/crd/bases` в `core/config/crd/bases`. Ст�
 - Новые версии действий GitHub (`actions/checkout@v7`, `actions/setup-go@v7`):
   существование тегов проверено, сам CI запустится только после отправки
   ветки на GitHub.
+
+## Этап 2. Контракт v1beta2
+
+Цель этапа: чтобы ядро Cluster API воспринимало `YandexCluster` и
+`YandexMachine` как объекты нового контракта и чтобы в коде провайдера не
+осталось ничего, что будет удалено из Cluster API вместе с v1beta1.
+
+Правила контракта:
+[InfraCluster](https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-cluster),
+[InfraMachine](https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-machine).
+Образец реализации — CAPD (`test/infrastructure/docker` в репозитории CAPI).
+
+> **Это несовместимое изменение API.** Поля меняются прямо в `v1alpha1`, без
+> новой версии API и без вебхука конверсии (вариант по умолчанию из раздела 8
+> требований). Версия провайдера поднимается до v0.3.0. Объекты, созданные
+> провайдером v0.2, новый провайдер не «подхватит»: старые условия в
+> `status.conditions` не проходят новую схему CRD. Кластеры, созданные на
+> v0.2, нужно пересоздать.
+
+### Что изменено в API (`api/v1alpha1`)
+
+| Поле | Было | Стало | Правило контракта |
+|---|---|---|---|
+| `status.ready` (кластер, машина) | `bool` | удалено | заменено на `status.initialization.provisioned` |
+| `status.initialization.provisioned` | — | `*bool` | «initialization completed», обязательное |
+| `status.conditions` | `clusterv1.Conditions` | `[]metav1.Condition` | «conditions» |
+| `status.failureReason`, `status.failureMessage` (машина) | были | удалены | «terminal failures»: в v1beta2 их больше нет |
+| `spec.providerID` (машина) | `*string` | `string` | «provider ID», рекомендация контракта |
+| `spec.controlPlaneEndpoint` (кластер) | тип из CAPI v1beta1 | собственный тип `APIEndpoint`, `omitempty,omitzero` | «control plane endpoint» |
+| `spec.template.metadata` (шаблон машины) | `ObjectMeta` из v1beta1 | `ObjectMeta` из v1beta2, `omitzero` | руководство v1.10 → v1.11 |
+
+Условия и причины описаны в `api/v1alpha1/types.go`:
+
+| Объект | Условие | Причины |
+|---|---|---|
+| оба | `Ready` | `Ready`, `NotReady`, `ReadyUnknown` |
+| оба | `Paused` | выставляет утилита CAPI `util/paused` |
+| YandexCluster | `LoadBalancerReady` | `Active`, `Provisioning`, `ReconcileFailed`, `EndpointMismatch`, `Deleting`, `DeletionFailed` |
+| YandexMachine | `InstanceReady` | `Running`, `Provisioning`, `NotRunning`, `NotFound`, `CreateFailed`, `ReconcileFailed`, `WaitingForBootstrapData`, `Deleting`, `DeletionFailed` |
+
+`Ready` вычисляется перед каждой записью объекта как сводка единственного
+«содержательного» условия (`LoadBalancerReady` или `InstanceReady`) —
+`conditions.SetSummaryCondition`, как в CAPD. Ядро CAPI зеркалирует `Ready` в
+условие `InfrastructureReady` своего `Cluster` или `Machine`.
+
+Старые условия машины (`PROVISIONING`, `RUNNING`, `NOTFOUND`, `READY`) убраны:
+их названия служили одновременно и типом, и причиной, а причины с пробелами
+(`"load balancer reconcile error"`) не проходят проверку `metav1.Condition`
+(причина должна быть в CamelCase).
+
+`YandexIdentity` в контракт не входит, но его условия тоже переведены на
+`metav1.Condition` — иначе в коде остался бы импорт пакетов v1beta1. Поле
+`status.ready` у него сохранено.
+
+В CRD добавлены колонки для `kubectl get` (`Provisioned`, `Ready`, `Paused`,
+`State`, `Provider ID`) и категория `cluster-api`, чтобы объекты провайдера
+показывались в `kubectl get cluster-api`.
+
+### Что изменено в контроллерах
+
+- **Чтение объектов ядра** — через `api/core/v1beta2` (сделано на этапе 1).
+- **`initialization.provisioned`** ставится там же, где раньше ставился
+  `status.ready = true`: `ClusterScope.SetProvisioned()` и
+  `MachineScope.SetProvisioned()` (`internal/pkg/cloud/scope`).
+- **Пауза.** Вместо `annotations.IsPaused` вызывается
+  `paused.EnsurePausedCondition`: она выставляет условие `Paused` и сообщает,
+  нужно ли остановиться. Приостановленный объект по-прежнему не
+  обрабатывается: ни финализатор, ни обращения к облаку не выполняются.
+
+  Чтобы контроллер вообще увидел приостановленный объект и смог записать
+  условие, изменены фильтры событий: `ResourceNotPaused` заменён на
+  `ResourceIsChanged`, а для наблюдения за `Cluster` используются
+  `ClusterPausedTransitions` (контроллер кластера) и
+  `ClusterPausedTransitionsOrInfrastructureProvisioned` (контроллер машин).
+  Так же сделано в CAPD.
+- **Остановленная ВМ.** Раньше для состояния, отличного от `RUNNING`,
+  `STARTING` и `PROVISIONING`, провайдер записывал `failureReason` и
+  `failureMessage`. Теперь он записывает `status.instanceState` и условие
+  `InstanceReady=False` с причиной `NotRunning` (или `NotFound`), и продолжает
+  опрашивать ВМ раз в 10 секунд. ВМ не перезапускается и не пересоздаётся —
+  это поведение сохранено и закреплено отдельным тестом.
+  `initialization.provisioned` при остановке остаётся `true`: по контракту
+  это поле говорит только о первоначальном создании.
+- **Финализатор.** Контроллеры кластера и identity после добавления
+  финализатора возвращали `ctrl.Result{Requeue: true}`. Поле `Requeue`
+  объявлено устаревшим в controller-runtime, а повтор и так происходит:
+  запись финализатора меняет объект и порождает событие. Теперь возвращается
+  пустой `ctrl.Result{}`.
+- **Сообщения ошибок в условиях** берутся через новую функцию
+  `ycerrors.Message`. Ошибки Yandex SDK содержат идентификатор запроса,
+  который меняется при каждом вызове. Если писать такой текст в условие,
+  объект меняется при каждом проходе, это порождает событие и немедленный
+  новый проход — получается «горячий» цикл. `Message` оставляет только код и
+  текст gRPC-статуса. О том же предупреждает
+  [руководство v1.13 → v1.14](https://cluster-api.sigs.k8s.io/developer/providers/migrations/v1.13-to-v1.14).
+
+### Метка контракта
+
+`config/crd/kustomization.yaml`: метка `cluster.x-k8s.io/v1beta1: v1alpha1`
+заменена на `cluster.x-k8s.io/v1beta2: v1alpha1`. По этой метке ядро CAPI
+определяет, по какому контракту читать объект. Заодно устаревший
+`commonLabels` заменён на `labels`.
+
+### Расхождения с исходными требованиями
+
+1. **`status.deprecated.v1beta1` не введён.** В требованиях сказано перенести
+   туда старые условия, `failureReason` и `failureMessage`, «как в CAPD». Это
+   не сделано намеренно:
+
+   - В CAPD блок `deprecated` нужен для конверсии между его версиями API
+     v1beta1 и v1beta2. У CAPY одна версия и конверсии нет, читать эти поля
+     некому.
+   - Ядро CAPI для провайдера с контрактом v1beta2 их не читает: оно смотрит
+     на `status.initialization.provisioned` и `status.conditions`
+     (`internal/contract/infrastructure_machine.go` в CAPI v1.14).
+   - Чтобы хранить старые условия, нужны тип `clusterv1beta1.Conditions` и
+     пакеты `util/deprecated/v1beta1`. Руководство v1.13 → v1.14 прямо
+     говорит, что они будут удалены следом за API v1beta1 (CAPI v1.16). То
+     есть блок `deprecated` вернул бы в код ту самую «мину» весны 2027 года,
+     ради снятия которой делается обновление.
+
+   Сейчас в коде провайдера нет ни одного импорта пакетов v1beta1.
+
+2. **Проверка «Cluster API видит провайдер как v1beta2»** выполнена в kind на
+   этапе 4, а не в envtest: в envtest нет контроллеров ядра, которые читают
+   контракт.
+
+### Тесты
+
+Существующие проверки сохранены и переписаны на новые поля:
+
+| Было | Стало |
+|---|---|
+| `status.ready == true` | `initialization.provisioned == true`, `Ready=True` и `InstanceReady`/`LoadBalancerReady=True` |
+| `status.ready == false` | `provisioned` не выставлен и `Ready` не `True` |
+| `failureReason != nil` при пропавшей ВМ | `InstanceReady=False`, причина `NotFound`, непустое сообщение, `Ready=False` |
+| причина `NOTFOUND` при ошибке создания | `InstanceReady=False`, причина `CreateFailed` |
+| `conditions == nil` при ошибке регистрации в балансировщике | `InstanceReady=False`, причина `ReconcileFailed` (раньше об этой ошибке в статусе не было ничего) |
+| `result.Requeue == true` после добавления финализатора | результат пустой |
+| `result.Requeue == false` | удалено там, где рядом уже проверяется `RequeueAfter`, иначе заменено на проверку `RequeueAfter == 0` |
+
+Добавлены проверки:
+
+- на паузе выставляется `Paused=True`, финализатор не добавляется, обращений
+  к облаку нет (кластер и машина);
+- у готовой машины `provisioned=true`, `providerID` в формате `yandex://<id>`,
+  `Paused=False`;
+- новый сценарий «ВМ остановлена и запущена снова»: ВМ создаётся один раз,
+  при `STOPPED` машина становится не готовой, но `provisioned` и `providerID`
+  не меняются, после `RUNNING` машина снова готова. Mock строгий: повторный
+  вызов создания или удаления ВМ провалил бы тест.
+
+Итого 35 сценариев контроллеров (было 34).
+
+### Что осталось непроверенным
+
+- Обновление «на месте» с v0.2 на v0.3 при существующих кластерах — не
+  поддерживается и не проверялось (см. предупреждение в начале раздела).
+- Поведение `MachineHealthCheck` при остановленной ВМ: условие
+  `InfrastructureReady` у `Machine` станет `False`. Будет ли MHC из-за этого
+  пересоздавать машину, зависит от его настройки; это пункт 5 ручной
+  проверки на живом облаке. На паузе кластера MHC не работает.

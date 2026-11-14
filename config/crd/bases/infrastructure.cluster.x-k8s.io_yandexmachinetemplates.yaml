@@ -8,6 +8,8 @@ metadata:
 spec:
   group: infrastructure.cluster.x-k8s.io
   names:
+    categories:
+    - cluster-api
     kind: YandexMachineTemplate
     listKind: YandexMachineTemplateList
     plural: yandexmachinetemplates
@@ -46,6 +48,7 @@ spec:
                 properties:
                   metadata:
                     description: Standard object's metadata.
+                    minProperties: 1
                     properties:
                       annotations:
                         additionalProperties:
@@ -128,8 +131,11 @@ spec:
                           More information https://cloud.yandex.ru/ru/docs/compute/concepts/vm-platforms .
                         type: string
                       providerID:
-                        description: ProviderID is the unique identifier as specified
-                          by the cloud provider.
+                        description: |-
+                          providerID must match the provider ID as seen on the node object corresponding to this machine.
+                          It has the format yandex://<instance-id> and is set by the provider once the instance is created.
+                        maxLength: 512
+                        minLength: 1
                         type: string
                       resources:
                         description: Resources contains computing resources of YandexCloud

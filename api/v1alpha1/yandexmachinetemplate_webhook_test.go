@@ -111,7 +111,7 @@ func TestYandexMachineTemplate_ValidateCreate(t *testing.T) {
 					Template: infrav1.YandexMachineTemplateResource{
 						Spec: infrav1.YandexMachineSpec{
 							ZoneID:     ptr.To("ru-central1-a"),
-							ProviderID: ptr.To("yandex://1234567"),
+							ProviderID: "yandex://1234567",
 						},
 					},
 				},
