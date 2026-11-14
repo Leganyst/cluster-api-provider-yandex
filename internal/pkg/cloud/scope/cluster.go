@@ -209,15 +209,20 @@ func getYandexClient(ctx context.Context, params ClusterScopeParams) (yandex.Cli
 				params.YandexCluster.Spec.IdentityRef.Namespace, params.YandexCluster.Spec.IdentityRef.Name)
 		}
 
+		// A cluster which references an identity must be managed with the key of that identity only.
+		// Falling back to the default key here would silently create or delete cloud resources on
+		// behalf of another service account, and it would hide the real problem with the identity.
 		yc, err := params.YandexClientGetter.GetFromSecret(ctx,
 			params.Client, identity.Spec.SecretName, params.YandexCluster.Spec.IdentityRef.Namespace, identity.Spec.KeyName)
-		if err == nil {
-			return yc, nil
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to build YandexCloud client from identity %s/%s",
+				params.YandexCluster.Spec.IdentityRef.Namespace, params.YandexCluster.Spec.IdentityRef.Name)
 		}
-		// no need to return error here, as we can fall back to default client
+
+		return yc, nil
 	}
 
-	// Fall back to default client if no identity is provided
+	// Use the default client if no identity is provided
 	yc, err := params.YandexClientGetter.GetDefault(ctx)
 	if err != nil {
 		return nil, err

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kube "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -36,7 +35,7 @@ func (b *YandexClientProvider) GetFromSecret(ctx context.Context, cl kube.Client
 
 	key, ok := secret.Data[keyName]
 	if !ok {
-		return nil, fmt.Errorf("key %s not found in secret %s/%s", keyName, secretName, metav1.NamespaceDefault)
+		return nil, fmt.Errorf("key %s not found in secret %s/%s", keyName, secretNamespace, secretName)
 	}
 
 	return getClient(ctx, string(key))
@@ -48,7 +47,7 @@ func (b *YandexClientProvider) GetDefault(ctx context.Context) (Client, error) {
 		return nil, fmt.Errorf("default key is not set")
 	}
 
-	return getClient(context.Background(), b.defaultKey)
+	return getClient(ctx, b.defaultKey)
 }
 
 // GetFromKey returns YandexClient build from provided key

@@ -152,7 +152,7 @@ func (s *Service) Delete(ctx context.Context) (bool, error) {
 
 // createComputeInstance creates a virtual machine from YandexCompute specification.
 func (s *Service) createComputeInstance(ctx context.Context, client yandex.Client) (string, error) {
-	request, err := s.scope.GetInstanceReq()
+	request, err := s.scope.GetInstanceReq(ctx)
 	if err != nil {
 		return "", err
 	}

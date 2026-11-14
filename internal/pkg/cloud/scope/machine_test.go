@@ -71,7 +71,7 @@ func TestMachineScope_GetBootstrapData(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(scp).ToNot(BeNil())
 
-	get, err := scp.GetBootstrapData()
+	get, err := scp.GetBootstrapData(context.Background())
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(get).To(Equal(want))
 
@@ -83,7 +83,7 @@ func TestMachineScope_GetBootstrapData(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(scp).ToNot(BeNil())
 
-	get, err = scp.GetBootstrapData()
+	get, err = scp.GetBootstrapData(context.Background())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(get).To(BeZero())
 }

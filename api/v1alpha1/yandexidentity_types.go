@@ -24,6 +24,10 @@ const (
 	// IdentityFinalizer allows cleaning up resources associated with
 	// IdentityFinalizer before removing it from the apiserver.
 	IdentityFinalizer = "yandexidentity.infrastructure.cluster.x-k8s.io"
+
+	// identityLabelPrefix is the prefix of the label which links a YandexCluster to its YandexIdentity.
+	// The label has the form yandexidentity/<identity namespace>: <identity name>.
+	identityLabelPrefix = "yandexidentity/"
 )
 
 //+kubebuilder:validation:Required
@@ -37,7 +41,8 @@ type YandexIdentitySpec struct {
 
 	// KeyName is the name of the key in the secret. Default is `YandexCloudSAKey`.
 	// +optional
-	KeyName string `json:"keyname" default:"YandexCloudSAKey"`
+	// +kubebuilder:default=YandexCloudSAKey
+	KeyName string `json:"keyname,omitempty"`
 }
 
 // YandexIdentityStatus defines the observed state of YandexIdentity.
@@ -109,7 +114,7 @@ func (i *YandexIdentity) GenerateLabelsForCluster() map[string]string {
 }
 
 func generateIdentityLabelKeyAndValue(name, namespace string) (string, string) {
-	return "yandexidentity/" + namespace, name
+	return identityLabelPrefix + namespace, name
 }
 
 func init() {

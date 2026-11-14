@@ -18,11 +18,13 @@ package v1alpha1
 
 import (
 	"context"
-	"net"
 	"net/netip"
 	"reflect"
+	"strings"
+	"unicode"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -127,11 +129,10 @@ func (*YandexClusterValidator) ValidateDelete(_ context.Context, c *YandexCluste
 func getAddrType(s string) AddrType {
 	parsedIP, err := netip.ParseAddr(s)
 	if err != nil {
-		if _, errfqdn := net.LookupHost(s); errfqdn == nil {
+		if isFQDN(s) {
 			return FQDN
 		}
 		return Unknown
-
 	}
 	if parsedIP.Is4() {
 		return IPV4
@@ -140,6 +141,27 @@ func getAddrType(s string) AddrType {
 		return IPV6
 	}
 	return Unknown
+}
+
+// isFQDN checks that s is a syntactically valid fully qualified domain name.
+//
+// The check is purely syntactic on purpose. An admission webhook must give the same answer
+// for the same object, no matter where and when it runs, so it must not resolve the name:
+// DNS may be unavailable or slow from the management cluster, and the name of a control
+// plane endpoint does not have to be resolvable from there at all.
+func isFQDN(s string) bool {
+	if len(validation.IsDNS1123Subdomain(s)) != 0 {
+		return false
+	}
+
+	labels := strings.Split(s, ".")
+	if len(labels) < 2 {
+		return false
+	}
+
+	// A top level domain is never all-numeric (RFC 3696, section 2).
+	// This also rejects malformed IPv4 addresses like 1000.10.10.10.
+	return strings.ContainsFunc(labels[len(labels)-1], unicode.IsLetter)
 }
 
 // isIPv4 checks if address is an ipv4 address

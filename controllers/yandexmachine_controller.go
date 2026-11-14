@@ -126,6 +126,15 @@ func (r *YandexMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// The Yandex Cloud client is built for this reconcile only and has to be closed, otherwise
+	// every reconcile of a YandexMachine leaks the GRPC connections of the SDK.
+	// (The cluster scope itself is not closed here: that would also patch the YandexCluster.)
+	defer func() {
+		if err := clusterScope.GetClient().Close(ctx); err != nil {
+			logger.Error(err, "failed to close YandexCloud client")
+		}
+	}()
+
 	machineScope, err := scope.NewMachineScope(scope.MachineScopeParams{
 		Client:        r.Client,
 		Machine:       machine,

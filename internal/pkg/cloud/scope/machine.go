@@ -157,10 +157,10 @@ func (m *MachineScope) SetInstanceStatus(v infrav1.InstanceStatus) {
 }
 
 // GetBootstrapData returns the bootstrap data from the secret in the Machine's bootstrap.dataSecretName.
-func (m *MachineScope) GetBootstrapData() (string, error) {
+func (m *MachineScope) GetBootstrapData(ctx context.Context) (string, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: m.Namespace(), Name: *m.Machine.Spec.Bootstrap.DataSecretName}
-	if err := m.client.Get(context.TODO(), key, secret); err != nil {
+	if err := m.client.Get(ctx, key, secret); err != nil {
 		return "", errors.Wrapf(err, "failed to retrieve bootstrap data secret for YandexMachine %s/%s", m.Namespace(), m.Name())
 	}
 
@@ -188,8 +188,8 @@ func parseProviderID(id string) string {
 }
 
 // GetInstanceReq returns YandexCloud compute instance creation request.
-func (m *MachineScope) GetInstanceReq() (*compute.CreateInstanceRequest, error) {
-	bootstrapData, err := m.GetBootstrapData()
+func (m *MachineScope) GetInstanceReq(ctx context.Context) (*compute.CreateInstanceRequest, error) {
+	bootstrapData, err := m.GetBootstrapData(ctx)
 	if err != nil {
 		return nil, err
 	}
